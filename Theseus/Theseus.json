@@ -1,0 +1,21 @@
+{
+  "Author": "ofnature",
+  "Name": "Theseus",
+  "InternalName": "Theseus",
+  "Punchline": "Runs dungeons for your whole fleet — and picks up where it left off.",
+  "Description": "Automated dungeon running for multibox fleets. Paths through the dungeon, engages trash, hands bosses to BossMod Reborn and resumes pathing. Reads the duty objective list so an interrupted run resumes where it stopped instead of restarting. Every box paths itself and syncs on objectives, and repairs and extracts materia between runs. Companion to Daedalus.",
+  "ApplicableVersion": "any",
+  "DalamudApiLevel": 15,
+  "RepoUrl": "https://github.com/ofnature/Theseus",
+  "IconUrl": "https://raw.githubusercontent.com/ofnature/Theseus/main/images/icon.png",
+  "Tags": [
+    "dungeon",
+    "automation",
+    "multibox",
+    "duty"
+  ],
+  "CategoryTags": [
+    "utility"
+  ],
+  "LoadPriority": 0
+}

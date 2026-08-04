@@ -1,0 +1,98 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Download Dalamud
+        run: |
+          wget -q https://goatcorp.github.io/dalamud-distrib/stg/latest.zip -O dalamud.zip
+          unzip -q dalamud.zip -d ~/dalamud
+
+      - name: Restore
+        run: dotnet restore Theseus.sln
+
+      - name: Build
+        run: dotnet build Theseus.sln -c Release --no-restore -p:DalamudLibPath=$HOME/dalamud/
+
+      - name: Test
+        run: dotnet test Theseus.Tests -c Release --no-build
+
+      - name: Create Release Archive
+        run: cp Theseus/bin/Release/Theseus/latest.zip Theseus.zip
+
+      - name: Extract Version
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+
+      - name: Update Theseus entry in repo.json
+        run: |
+          # repo.json here is Theseus's own single-entry manifest. The AGGREGATOR feed the
+          # fleet actually subscribes to lives in the Daedalus repo and carries every plugin;
+          # bump the Theseus entry there too when cutting a release.
+          NEW_VERSION="${{ steps.version.outputs.version }}"
+          TAG="${{ github.ref_name }}"
+          ZIP_URL="https://github.com/ofnature/Theseus/releases/download/${TAG}/Theseus.zip"
+          API_LEVEL=$(jq -r '.DalamudApiLevel' Theseus/Theseus.json)
+          # Tags are 3-part (vX.Y.Z); Dalamud.NET.Sdk auto-pads the bundled manifest's
+          # AssemblyVersion to 4-part (X.Y.Z.0). repo.json must use the 4-part form so
+          # Dalamud's strict manifest verification passes.
+          ASSEMBLY_VERSION="${NEW_VERSION}.0"
+          jq --arg v "$ASSEMBLY_VERSION" --arg url "$ZIP_URL" --argjson api "$API_LEVEL" '
+            map(
+              if .InternalName == "Theseus" then
+                .AssemblyVersion = $v
+                | .DalamudApiLevel = $api
+                | .DownloadLinkInstall = $url
+                | .DownloadLinkTesting = $url
+                | .DownloadLinkUpdate = $url
+              else . end
+            )
+          ' repo.json > repo.json.tmp
+          mv repo.json.tmp repo.json
+          # Sanity check — ensure the entry was actually updated.
+          if ! jq -e --arg v "$ASSEMBLY_VERSION" 'any(.[]; .InternalName == "Theseus" and .AssemblyVersion == $v)' repo.json > /dev/null; then
+            echo "ERROR: Theseus entry missing or version not updated in repo.json" >&2
+            cat repo.json >&2
+            exit 1
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: Theseus.zip
+          generate_release_notes: true
+
+      - name: Commit repo.json
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          git checkout main
+          git add repo.json
+          if git diff --cached --quiet; then
+            echo "repo.json unchanged, skipping commit"
+          else
+            git commit -m "Update repo.json for ${{ github.ref_name }}"
+            git push origin main
+          fi
