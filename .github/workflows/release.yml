@@ -39,7 +39,18 @@ jobs:
         run: dotnet test Theseus.Tests -c Release --no-build
 
       - name: Create Release Archive
-        run: cp Theseus/bin/Release/Theseus/latest.zip Theseus.zip
+        run: |
+          # DalamudPackager's output path moves with the build platform: a solution build can
+          # land it under bin/x64/Release/ while a project build uses bin/Release/. Find it
+          # rather than hardcoding, and fail loudly with a listing if it is genuinely absent.
+          ZIP=$(find Theseus/bin -name latest.zip -path '*Release*' | head -1)
+          if [ -z "$ZIP" ]; then
+            echo "ERROR: DalamudPackager produced no latest.zip" >&2
+            find Theseus/bin -type f | head -50 >&2
+            exit 1
+          fi
+          echo "Packaged: $ZIP"
+          cp "$ZIP" Theseus.zip
 
       - name: Extract Version
         id: version
