@@ -30,6 +30,7 @@ public sealed class DebugWindow : Window
     private readonly Func<string> _describeNearby;
     private readonly Func<string> _describeVnav;
     private readonly Func<string> _describeAriadne;
+    private readonly Func<string> _describeShadow;
     private readonly Func<string> _describeRun;
     private readonly Func<string> _describeCompanions;
 
@@ -39,6 +40,7 @@ public sealed class DebugWindow : Window
         Func<string> describeNearby,
         Func<string> describeVnav,
         Func<string> describeAriadne,
+        Func<string> describeShadow,
         Func<string> describeRun,
         Func<string> describeCompanions)
         : base("Theseus — Debug##TheseusDebug")
@@ -48,6 +50,7 @@ public sealed class DebugWindow : Window
         _describeNearby = describeNearby;
         _describeVnav = describeVnav;
         _describeAriadne = describeAriadne;
+        _describeShadow = describeShadow;
         _describeRun = describeRun;
         _describeCompanions = describeCompanions;
 
@@ -64,12 +67,26 @@ public sealed class DebugWindow : Window
     {
         var diagnostics = _reader.ReadDiagnostics();
         DrawMovement();
+        DrawShadow();
         DrawCompanionData();
         DrawNearby();
         DrawLifecycle();
         DrawSnapshot();
         DrawDirector(diagnostics);
         DrawToDoList(diagnostics);
+    }
+
+    /// <summary>
+    /// What the solver's perception has learned — the in-game reading of the shadow driver's exit
+    /// criterion: on a farm run the counts climb and the gates appear; the run itself is unchanged.
+    /// </summary>
+    private void DrawShadow()
+    {
+        TheseusTheme.SectionHeader("SOLVER (shadow)");
+        ImGui.TextWrapped(_describeShadow());
+
+        if (ImGui.Button("Copy solver"))
+            ImGui.SetClipboardText(_describeShadow());
     }
 
     /// <summary>

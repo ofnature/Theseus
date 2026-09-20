@@ -49,6 +49,7 @@ public sealed class RunController : IDisposable
     private readonly ObjectiveMapper _mapper = new();
     private readonly PathRecorder _recorder;
     private readonly FrontierNavigator? _frontier;
+    private readonly Solver.ShadowObserver? _shadow;
 
     /// <summary>
     /// True while the run is being driven by the frontier navigator rather than a recorded route.
@@ -100,7 +101,8 @@ public sealed class RunController : IDisposable
         IFramework framework,
         Action<string> log,
         Func<uint, bool>? autoRunnableTerritory = null,
-        FrontierNavigator? frontier = null)
+        FrontierNavigator? frontier = null,
+        Solver.ShadowObserver? solverShadow = null)
     {
         _config = config;
         _lifecycle = lifecycle;
@@ -114,6 +116,7 @@ public sealed class RunController : IDisposable
         _log = log;
         _autoRunnableTerritory = autoRunnableTerritory ?? (_ => true);
         _frontier = frontier;
+        _shadow = solverShadow;
         _fleet = new FleetRoster(world);
         _gate = new FleetGate(world, _fleet, () => _config.PeerStaleSeconds);
 
@@ -147,6 +150,12 @@ public sealed class RunController : IDisposable
         => _frontier is null ? (0, 0) : (_frontier.VisitedLandmarks, _frontier.GhostCount);
 
     /// <summary>
+    /// What the solver's perception is doing, for the debug window. Diagnostic only: nothing here
+    /// drives the character.
+    /// </summary>
+    public string DescribeShadow() => _shadow?.Describe() ?? "off";
+
+    /// <summary>
     /// What the executor is doing about movement right now, for the debug window. Diagnostic only.
     /// </summary>
     public string DescribeMovement()
@@ -168,6 +177,7 @@ public sealed class RunController : IDisposable
         _lifecycle.DutyStarted -= TryAutoStart;
         _lifecycle.RunEntered -= OnRunEntered;
         _lifecycle.RunLeft -= OnRunLeft;
+        _shadow?.Save();
         Stop("Plugin unloading.");
     }
 
@@ -506,6 +516,11 @@ public sealed class RunController : IDisposable
         // Recording runs alongside everything else and outlives a stopped run, because the point is
         // to watch a person play rather than to watch Theseus.
         _recorder.Tick();
+
+        // The solver's perception does the same, and for the same reason: a run that was going to
+        // happen anyway is what teaches it the dungeon. It issues no movement, so it is safe beside
+        // every state below — including the ones that are not Theseus driving at all.
+        _shadow?.Tick();
 
         if (State is RunState.Idle or RunState.Faulted)
             return;

@@ -11,6 +11,7 @@ using Theseus.Services.Ipc;
 using Theseus.Services.Paths;
 using Theseus.Services.Run;
 using Theseus.Windows;
+using Solver = Theseus.Services.Solver;
 using static Theseus.Service;
 
 namespace Theseus;
@@ -49,6 +50,7 @@ public sealed class TheseusPlugin : IDalamudPlugin
     private readonly Frontier.ZoneOverrideStore _zoneOverrides;
     private readonly GameDutyEntryWorld _dutyEntryWorld;
     private readonly RunController _runController;
+    private readonly Solver.ShadowObserver _shadow;
     private readonly ConfigWindow _configWindow;
     private readonly RunWindow _runWindow;
     private readonly DebugWindow _debugWindow;
@@ -106,6 +108,26 @@ public sealed class TheseusPlugin : IDalamudPlugin
         _dutyEntryWorld = new GameDutyEntryWorld(
             Condition, Service.GameGui, _dutyLifecycle, trustRoster, message => Log.Warning(message));
 
+        // The solver's perception, running beside the route executor: it classifies what the run
+        // passes, discovers the edges the mesh refuses, and writes down what it learns — never
+        // issuing a move. Nothing here decides anything yet; the arbiter and the loops come next.
+        var configDir = PluginInterface.ConfigDirectory.FullName;
+        var taxonomyPath = System.IO.Path.Combine(configDir, "taxonomy.json");
+        var taxonomy = new Solver.Taxonomy(log: message => Log.Warning(message));
+        taxonomy.Load(taxonomyPath);
+
+        var gapLog = new Solver.GapLog(
+            System.IO.Path.Combine(configDir, "gaps.jsonl"), log: message => Log.Warning(message));
+
+        _shadow = new Solver.ShadowObserver(
+            world, objectiveReader, taxonomy, taxonomyPath,
+            new Frontier.GhostCache(),
+            new Solver.ReachableFrontier(_ariadneIpc, () => world.PlayerPosition, message => Log.Warning(message)),
+            new Solver.GateLedger(), gapLog, _ariadneIpc,
+            () => _dutyLifecycle.IsInDuty,
+            () => _dutyLifecycle.RunKey.ToString(),
+            message => Log.Information(message));
+
         _runController = new RunController(
             _config, _dutyLifecycle, _objectiveReader, _pathStore,
             new StepExecutor(
@@ -119,7 +141,8 @@ public sealed class TheseusPlugin : IDalamudPlugin
             world, Framework, message => Log.Information(message),
             // The catalog holds dungeons only, so membership is the "may auto-start here" test.
             territory => _dutyCatalog.ByTerritory(territory) is not null,
-            new Frontier.FrontierNavigator(world, _mapMarkers, _zoneOverrides, () => _config.LootChests));
+            new Frontier.FrontierNavigator(world, _mapMarkers, _zoneOverrides, () => _config.LootChests),
+            _shadow);
 
         // Published once the controller exists, so the gate never reports on a half-built run.
         // Daedalus reads a missing gate as idle, so appearing a moment late is harmless.
@@ -160,6 +183,7 @@ public sealed class TheseusPlugin : IDalamudPlugin
             () => world.DescribeNearby(40f),
             world.DescribeMovement,
             _ariadneIpc.Describe,
+            _runController.DescribeShadow,
             _runController.DescribeMovement,
             // Both agents, because which of them holds which system's roster is exactly the
             // question — reading one and assuming has been wrong twice.
