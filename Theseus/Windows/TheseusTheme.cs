@@ -55,6 +55,19 @@ internal static class TheseusTheme
     public static readonly Vector4 TextSecondary = new(0.60f, 0.58f, 0.55f, 1.00f);
     public static readonly Vector4 TextDisabled = new(0.35f, 0.35f, 0.38f, 1.00f);
 
+    // ── Party roles (FFXIV's own conventions, used only as role dots) ──
+    public static readonly Vector4 RoleTank = new(0.36f, 0.55f, 0.89f, 1.00f);
+    public static readonly Vector4 RoleHealer = new(0.35f, 0.72f, 0.42f, 1.00f);
+    public static readonly Vector4 RoleDps = new(0.78f, 0.38f, 0.38f, 1.00f);
+
+    public static Vector4 RoleColor(string role) => role switch
+    {
+        "Tank" => RoleTank,
+        "Healer" => RoleHealer,
+        "DPS" => RoleDps,
+        _ => TextSecondary,
+    };
+
     // ── Run-state colours (objective progress, fleet rows) ──
     public static readonly Vector4 ObjectiveDone = new(0.20f, 0.75f, 0.35f, 1.00f);
     public static readonly Vector4 ObjectiveCurrent = new(0.29f, 0.74f, 0.69f, 1.00f);
@@ -102,6 +115,26 @@ internal static class TheseusTheme
         ImGui.TextColored(available ? TextPrimary : StatusRed, label);
     }
 
+    /// <summary>
+    /// Full-width call-to-action button in the accent. The one thing on the panel you press to make
+    /// something happen gets the identity colour; everything else stays quiet around it.
+    /// </summary>
+    public static bool AccentButton(string label, float height = 30f)
+    {
+        ImGui.PushStyleColor(ImGuiCol.Button, AccentDim);
+        ImGui.PushStyleColor(ImGuiCol.ButtonHovered, AccentPatina);
+        ImGui.PushStyleColor(ImGuiCol.ButtonActive, AccentPatina);
+        ImGui.PushStyleColor(ImGuiCol.Text, TextPrimary);
+        try
+        {
+            return ImGui.Button(label, new Vector2(-1f, height));
+        }
+        finally
+        {
+            ImGui.PopStyleColor(4);
+        }
+    }
+
     /// <summary>Hover "(?)" tooltip for a non-obvious control.</summary>
     public static void HelpMarker(string text)
     {
@@ -112,14 +145,20 @@ internal static class TheseusTheme
     }
 
     /// <summary>
-    /// One duty-objective row: ✔ done / ▸ current / ??? still hidden by the game.
+    /// One duty-objective row: filled done / hollow current / dim still hidden by the game.
     /// Mirrors the in-game Duty Information panel, which is the source this reads from.
+    ///
+    /// <para>
+    /// Glyphs are restricted to ones the game's own font actually carries. Checkmarks and
+    /// triangles render as tofu here, which made every objective row look identical in a live
+    /// duty — so shape and colour both carry the state, and neither is decorative.
+    /// </para>
     /// </summary>
     public static void ObjectiveRow(string label, bool done, bool current)
     {
         var (glyph, color) = done
-            ? ("✔", ObjectiveDone)
-            : current ? ("▸", ObjectiveCurrent) : (" ", ObjectiveHidden);
+            ? ("●", ObjectiveDone)
+            : current ? ("○", ObjectiveCurrent) : ("·", ObjectiveHidden);
 
         ImGui.TextColored(color, glyph);
         ImGui.SameLine(0f, 6f);

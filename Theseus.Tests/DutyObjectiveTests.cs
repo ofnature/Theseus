@@ -20,11 +20,19 @@ public class DutyObjectiveTests
     }
 
     [Fact]
-    public void Objective_without_a_fraction_is_never_complete()
+    public void Objective_without_a_fraction_is_not_inferred_complete()
     {
         // Text/Bar shapes carry no denominator — treating "0 of 0" as done would mark an entire
         // dungeon finished the moment a non-fraction objective appeared.
         Assert.False(new DutyObjective(0, 0, 0, false, "Explore the caverns").IsComplete);
+    }
+
+    [Fact]
+    public void Game_reported_completion_wins_over_the_fraction()
+    {
+        // "Explore the caverns" ticks in the HUD without any number ever moving, so the director's
+        // own Complete flag is the only thing that can say so — inference cannot.
+        Assert.True(new DutyObjective(0, 0, 0, false, "Explore the caverns", ReportedComplete: true).IsComplete);
     }
 
     [Fact]
