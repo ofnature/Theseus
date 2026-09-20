@@ -64,7 +64,7 @@ public sealed unsafe class GameStepWorld : IStepWorld
         _vnav = vnav;
         _ariadne = ariadne;
         _navSource = navSource;
-        _ariadneMover = new AriadneMover(ariadne, vnav, () => PlayerPosition, log: log);
+        _ariadneMover = new AriadneMover(ariadne, vnav, () => PlayerPosition, SetForwardMovement, log: log);
         _bossMod = bossMod;
         _minerva = minerva;
         _bossHandler = bossHandler;

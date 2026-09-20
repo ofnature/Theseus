@@ -54,9 +54,18 @@ public class AriadneMoverTests
 
         public readonly List<Vector3> VnavMoveRequests = [];
         public readonly List<(int Waypoints, float Tolerance)> AriadneMoveRequests = [];
-        public readonly List<string> Warnings = [];
-        public readonly List<float> VnavTolerances = [];
+        public readonly List<string> Log = [];
 
+        /// <summary>The fallback warnings — what a run is owed when its source could not route a move.</summary>
+        public IEnumerable<string> Fallbacks => Log.Where(line => line.Contains("using vnavmesh"));
+
+        /// <summary>The transit's own narration: where the route stopped, and where it landed.</summary>
+        public IEnumerable<string> Transits => Log.Where(line => line.Contains("walking off the edge") || line.Contains("Transit landed"));
+        public readonly List<float> VnavTolerances = [];
+        public readonly List<bool> ForwardHolds = [];
+        public readonly List<(Vector3 From, Vector3 To, string Mode, bool Success)> Reported = [];
+
+        public Vector3 Position = PlayerPosition;
         public int PathfindCalls;
         public int VnavStops;
         public bool NavReady = true;
@@ -67,6 +76,18 @@ public class AriadneMoverTests
 
         public Func<Task<(string Result, List<Vector3> Waypoints, Vector3?, bool Partial)>> Answer =
             () => Task.FromResult<(string, List<Vector3>, Vector3?, bool)>(("ok", [], null, false));
+
+        private readonly Queue<Func<Task<(string Result, List<Vector3> Waypoints, Vector3?, bool Partial)>>> _scripted = [];
+
+        /// <summary>
+        /// Answers handed out in order, before <see cref="Answer"/> takes over. A transit asks more
+        /// than once — the goal, then the edge — and the two answers are rarely the same shape.
+        /// </summary>
+        public void Script(params Func<Task<(string Result, List<Vector3> Waypoints, Vector3?, bool Partial)>>[] answers)
+        {
+            foreach (var answer in answers)
+                _scripted.Enqueue(answer);
+        }
 
         public AriadneMover Mover { get; }
 
@@ -82,7 +103,7 @@ public class AriadneMoverTests
                 .Returns(() =>
                 {
                     PathfindCalls++;
-                    return Answer();
+                    return _scripted.Count > 0 ? _scripted.Dequeue()() : Answer();
                 });
 
             _pi.Setup(p => p.GetIpcSubscriber<List<Vector3>, bool, float, object>("Ariadne.Path.MoveToWithTolerance"))
@@ -128,12 +149,20 @@ public class AriadneMoverTests
             vnavStop.Setup(s => s.InvokeAction()).Callback(() => VnavStops++);
             _pi.Setup(p => p.GetIpcSubscriber<object>("vnavmesh.Path.Stop")).Returns(vnavStop.Object);
 
+            var report = new Mock<ICallGateSubscriber<Vector3, Vector3, string, bool, Task<bool>>>();
+            report.Setup(s => s.InvokeFunc(It.IsAny<Vector3>(), It.IsAny<Vector3>(), It.IsAny<string>(), It.IsAny<bool>()))
+                .Callback<Vector3, Vector3, string, bool>((from, to, mode, success) => Reported.Add((from, to, mode, success)))
+                .ReturnsAsync(true);
+            _pi.Setup(p => p.GetIpcSubscriber<Vector3, Vector3, string, bool, Task<bool>>("Ariadne.ReportTraversal"))
+                .Returns(report.Object);
+
             Mover = new AriadneMover(
                 new AriadneIpc(_pi.Object),
                 new VnavIpc(_pi.Object),
-                () => PlayerPosition,
+                () => Position,
+                held => ForwardHolds.Add(held),
                 () => Now,
-                Warnings.Add);
+                Log.Add);
         }
     }
 
@@ -152,7 +181,7 @@ public class AriadneMoverTests
         var move = Assert.Single(h.AriadneMoveRequests);
         Assert.Equal(2, move.Waypoints);
         Assert.Empty(h.VnavMoveRequests);
-        Assert.Empty(h.Warnings);
+        Assert.Empty(h.Fallbacks);
 
         // Taking a move over from a source that might still be following a path: two movers writing
         // input on one frame is the thing this prevents.
@@ -187,7 +216,7 @@ public class AriadneMoverTests
         Assert.True(h.Mover.Begin(Destination));
 
         Assert.Equal(3, h.VnavMoveRequests.Count); // every move still happened
-        Assert.Single(h.Warnings);                 // one line, not one per move
+        Assert.Single(h.Fallbacks);                // one line, not one per move
         Assert.Equal(0, h.PathfindCalls);          // Ariadne was not even asked
     }
 
@@ -202,8 +231,8 @@ public class AriadneMoverTests
 
         Assert.Equal([Destination], h.VnavMoveRequests);
         Assert.Empty(h.AriadneMoveRequests);
-        Assert.Single(h.Warnings);
-        Assert.Contains("noRouteOnMesh", h.Warnings[0]);
+        Assert.Single(h.Fallbacks);
+        Assert.Contains("noRouteOnMesh", h.Fallbacks.First());
     }
 
     [Fact]
@@ -230,7 +259,7 @@ public class AriadneMoverTests
 
         Assert.Equal(1 + 1 + 4, h.PathfindCalls); // the initial ask, then the retry budget, then no more asking
         Assert.Equal([Destination], h.VnavMoveRequests);
-        Assert.Single(h.Warnings);
+        Assert.Single(h.Fallbacks);
     }
 
     [Fact]
@@ -270,5 +299,223 @@ public class AriadneMoverTests
         _ = h.Mover.IsBusy;
 
         Assert.Equal(0.4f, Assert.Single(h.AriadneMoveRequests).Tolerance);
+    }
+
+    // ── Transits: a route that ends at a drop or a rail ──
+
+    /// <summary>
+    /// The Xelphatol one-way drop, exactly as the mesh answers it (probed 2026-09-20 through
+    /// Mnemosyne's CLI): <c>noRouteOnMesh partial waypoints=2</c> with the nearest reachable ground
+    /// 30 m above the landing and 0.7 y across from it.
+    /// </summary>
+    private static readonly Vector3 XelphatolLip = new(183.5f, 86.8f, -68.2f);
+    private static readonly Vector3 XelphatolLanding = new(182.8f, 56.8f, -68.0f);
+
+    private static Func<Task<(string Result, List<Vector3> Waypoints, Vector3?, bool Partial)>> EndsShortAt(
+        Vector3 edge, params Vector3[] waypoints)
+        => () => Task.FromResult<(string, List<Vector3>, Vector3?, bool)>(
+            ("noRouteOnMesh", [.. waypoints], edge, true));
+
+    [Fact]
+    public void A_route_that_ends_at_a_drop_is_walked_to_the_edge_and_pushed()
+    {
+        var h = new Harness { Position = XelphatolLip };
+        h.Answer = EndsShortAt(XelphatolLip, XelphatolLip);
+
+        Assert.True(h.Mover.Begin(XelphatolLanding));
+        Assert.True(h.Mover.IsBusy); // the partial route is being followed to the edge
+        Assert.Equal(TransitPhase.Approaching, h.Mover.Transit);
+        Assert.Single(h.AriadneMoveRequests);
+        Assert.Empty(h.ForwardHolds); // nothing pushed while there is still ground to walk
+
+        // The path stops where the mesh stops: the character is standing at the lip.
+        h.AriadnePathRunning = false;
+        Assert.True(h.Mover.IsBusy);
+        Assert.Equal(TransitPhase.Pushing, h.Mover.Transit);
+        Assert.Equal([true], h.ForwardHolds);
+        Assert.Empty(h.Fallbacks); // Ariadne could not route it, and that is not a warning — it is the rule
+        Assert.Single(h.Transits); // and it says so in the log, with where the route stopped
+    }
+
+    [Fact]
+    public void An_empty_answer_at_a_drop_walks_to_the_edge_before_pushing()
+    {
+        var h = new Harness { Position = new Vector3(190f, 86.8f, -68.2f) }; // 6.5 y from the lip
+        h.Script(
+            () => Task.FromResult<(string, List<Vector3>, Vector3?, bool)>(("noRouteOnMesh", [], XelphatolLip, false)),
+            () => Task.FromResult<(string, List<Vector3>, Vector3?, bool)>(("ok", [XelphatolLip], null, false)));
+
+        h.Mover.Begin(XelphatolLanding);
+        Assert.True(h.Mover.IsBusy); // the goal's answer: nothing to follow, so the edge is asked for
+        Assert.True(h.Mover.IsBusy); // the edge's own answer: followed
+
+        Assert.Equal(2, h.PathfindCalls); // the goal, then the edge itself
+        Assert.Equal(TransitPhase.Approaching, h.Mover.Transit);
+
+        var approach = Assert.Single(h.AriadneMoveRequests);
+        Assert.Equal(1, approach.Waypoints); // the route to the edge is what is being followed
+
+        // Walking to the edge, then the path ends there.
+        h.Position = XelphatolLip;
+        h.AriadnePathRunning = false;
+        Assert.True(h.Mover.IsBusy);
+
+        Assert.Equal([true], h.ForwardHolds);
+    }
+
+    [Fact]
+    public void The_push_lands_and_the_run_re_paths_from_the_far_side()
+    {
+        var h = new Harness { Position = XelphatolLip };
+        h.Answer = EndsShortAt(XelphatolLip, XelphatolLip);
+
+        h.Mover.Begin(XelphatolLanding);
+        _ = h.Mover.IsBusy;
+        h.AriadnePathRunning = false;
+        _ = h.Mover.IsBusy; // the push begins
+
+        // The game carries the character down and off while the hold is on.
+        h.Position = XelphatolLanding;
+        h.Now = h.Now.AddSeconds(2);
+        Assert.True(h.Mover.IsBusy); // push over, waiting to land
+        Assert.Equal([true, false], h.ForwardHolds); // released — never left held
+
+        h.Answer = () => Task.FromResult<(string, List<Vector3>, Vector3?, bool)>(
+            ("ok", [XelphatolLanding + new Vector3(0f, 0f, 4f)], null, false));
+        h.Now = h.Now.AddSeconds(0.6);
+        Assert.True(h.Mover.IsBusy); // landed, re-pathed, following the new route
+
+        Assert.Equal(TransitPhase.None, h.Mover.Transit);
+        Assert.Equal(2, h.AriadneMoveRequests.Count); // the partial route, then the re-path's
+
+        var reported = Assert.Single(h.Reported);
+        Assert.Equal(("direct", true), (reported.Mode, reported.Success));
+        Assert.Equal(XelphatolLip, reported.From);
+        Assert.Equal(XelphatolLanding, reported.To);
+    }
+
+    [Fact]
+    public void An_off_mesh_goal_is_not_a_transit()
+    {
+        // The r2d3 probe's own answer for a goal in the void: nothing to land on. Walking to the
+        // nearest point and stepping off would be opening the run to a fall it cannot recover from.
+        var h = new Harness { Position = XelphatolLip };
+        h.Answer = () => Task.FromResult<(string, List<Vector3>, Vector3?, bool)>(
+            ("targetOffMesh", [], new Vector3(253.8f, 66.5f, -52.2f), false));
+
+        Assert.True(h.Mover.Begin(new Vector3(260f, 60f, -40f)));
+        Assert.True(h.Mover.IsBusy);
+
+        Assert.Equal(TransitPhase.None, h.Mover.Transit);
+        Assert.Equal([new Vector3(260f, 60f, -40f)], h.VnavMoveRequests);
+        Assert.Empty(h.ForwardHolds);
+    }
+
+    [Fact]
+    public void A_goal_above_the_reachable_edge_is_not_a_transit()
+    {
+        // Forward movement cannot climb. A goal more than a step above the nearest reachable ground
+        // is a ledge, a wall or a locked door — not a drop, and not worth an attempt.
+        var h = new Harness { Position = XelphatolLip };
+        h.Answer = () => Task.FromResult<(string, List<Vector3>, Vector3?, bool)>(
+            ("noRouteOnMesh", [], XelphatolLip, false));
+
+        h.Mover.Begin(XelphatolLip + new Vector3(0.5f, 6f, 0f));
+        _ = h.Mover.IsBusy;
+
+        Assert.Equal(TransitPhase.None, h.Mover.Transit);
+        Assert.Empty(h.ForwardHolds);
+        Assert.Single(h.VnavMoveRequests);
+    }
+
+    [Fact]
+    public void The_rail_the_migration_note_measured_is_recognised()
+    {
+        // Mistwake x6d9, probed the same day: from the boarding platform, the landing is 4.6 m below
+        // the nearest reachable ground and two yalms across from it.
+        var boarding = new Vector3(104.18f, 38.06f, 275.93f);
+        var edge = new Vector3(93.2f, 42.1f, 283.8f);
+        var landing = new Vector3(91.2f, 37.5f, 283.8f);
+
+        var h = new Harness { Position = boarding };
+        h.Answer = EndsShortAt(edge, edge);
+
+        h.Mover.Begin(landing);
+        _ = h.Mover.IsBusy;
+
+        Assert.Equal(TransitPhase.Approaching, h.Mover.Transit);
+
+        // Off the platform, along the rail's approach, and at the lip.
+        h.Position = edge;
+        h.AriadnePathRunning = false;
+        _ = h.Mover.IsBusy;
+
+        Assert.Equal(TransitPhase.Pushing, h.Mover.Transit);
+        Assert.Equal([true], h.ForwardHolds);
+    }
+
+    [Fact]
+    public void Transits_are_bounded_and_then_the_destination_is_given_up()
+    {
+        // A route that keeps answering the same way: two attempts — the drop, then a second look
+        // from wherever it ended — and then the other source. Never a run that steps off forever.
+        var h = new Harness { Position = XelphatolLip };
+        h.Answer = EndsShortAt(XelphatolLip, XelphatolLip);
+
+        h.Mover.Begin(XelphatolLanding);
+
+        for (var attempt = 0; attempt < 2; attempt++)
+        {
+            _ = h.Mover.IsBusy; // following the partial route
+            h.AriadnePathRunning = false;
+            _ = h.Mover.IsBusy; // pushing
+            h.Now = h.Now.AddSeconds(2);
+            _ = h.Mover.IsBusy; // released, settling
+            h.Now = h.Now.AddSeconds(0.6);
+            _ = h.Mover.IsBusy; // landed where it started, re-pathing
+        }
+
+        Assert.Equal([true, false, true, false], h.ForwardHolds);
+        Assert.Equal(TransitPhase.None, h.Mover.Transit);
+        Assert.Equal([XelphatolLanding], h.VnavMoveRequests); // the fallback, once
+        Assert.Single(h.Fallbacks);
+        Assert.Empty(h.Reported); // nothing was crossed, so nothing is claimed
+    }
+
+    [Fact]
+    public void A_push_that_moves_nothing_is_abandoned_early()
+    {
+        var h = new Harness { Position = XelphatolLip };
+        h.Answer = EndsShortAt(XelphatolLip, XelphatolLip);
+
+        h.Mover.Begin(XelphatolLanding);
+        _ = h.Mover.IsBusy;
+        h.AriadnePathRunning = false;
+        _ = h.Mover.IsBusy; // pushing, forward held
+
+        // Past the no-movement grace but well inside the push: a hold against a wall is released
+        // rather than spent.
+        h.Now = h.Now.AddSeconds(0.8);
+        _ = h.Mover.IsBusy;
+
+        Assert.Equal([true, false], h.ForwardHolds);
+    }
+
+    [Fact]
+    public void Stopping_releases_the_push()
+    {
+        var h = new Harness { Position = XelphatolLip };
+        h.Answer = EndsShortAt(XelphatolLip, XelphatolLip);
+
+        h.Mover.Begin(XelphatolLanding);
+        _ = h.Mover.IsBusy;
+        h.AriadnePathRunning = false;
+        _ = h.Mover.IsBusy; // pushing
+
+        h.Mover.Stop();
+
+        Assert.Equal([true, false], h.ForwardHolds);
+        Assert.Equal(TransitPhase.None, h.Mover.Transit);
+        Assert.False(h.Mover.IsBusy);
     }
 }
