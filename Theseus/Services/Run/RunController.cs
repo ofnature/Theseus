@@ -64,6 +64,13 @@ public sealed class RunController : IDisposable
     /// </summary>
     private bool _exploring;
 
+    /// <summary>
+    /// True once the solver has handed this run back. It does not get the run again in the same
+    /// duty: the fallback exists for exactly this moment, and a solver that reassumed control would
+    /// hand back again a second later, forever.
+    /// </summary>
+    private bool _solverGaveBack;
+
     private readonly FleetRoster _fleet;
     private readonly FleetGate _gate;
 
@@ -174,7 +181,8 @@ public sealed class RunController : IDisposable
                $"{driver.Detail} · driving {driver.RunsDriven}, given back {driver.RunsHandedBack} · " +
                $"territory {territory}: {(record.Promoted ? "promoted" : "not promoted")}, " +
                $"{record.ShadowAgreements}/{Solver.SolverRecordStore.AgreementsToPromote} agreements, " +
-               $"{record.SolverRuns} solver run(s), {record.SolverFallbacks} fallback(s)";
+               $"{record.SolverRuns} solver run(s), {record.SolverFallbacks} fallback(s) · " +
+               $"{solver.Watch.Describe()}";
     }
 
     /// <summary>
@@ -368,6 +376,8 @@ public sealed class RunController : IDisposable
             return false;
         }
 
+        _solverGaveBack = false;
+
         var territoryId = _lifecycle.RunKey.TerritoryId;
         var resolved = _paths.Resolve(
             territoryId,
@@ -384,7 +394,7 @@ public sealed class RunController : IDisposable
                 ? solver.Records.Decide(territoryId, hasRoute: false, solverReady: solver.Usable())
                 : Solver.DriverKind.Route;
 
-            if (_solver is not null && kind == Solver.DriverKind.Solver && _config.ExploreUnmappedZones)
+            if (_solver is not null && !_solverGaveBack && kind == Solver.DriverKind.Solver && _config.ExploreUnmappedZones)
             {
                 _exploring = true;
                 ActivePath = null;
@@ -414,6 +424,26 @@ public sealed class RunController : IDisposable
         if (!resolved.IsRunnable)
         {
             Fail(resolved.Blockers.Count > 0 ? resolved.Blockers[0] : "Path is not runnable.");
+            return false;
+        }
+
+        // §8's "solver with route fallback": a promoted territory drives with the solver, and the
+        // route stays on disk as the way back in. A run the solver has already given back does not
+        // get it again — that is what the fallback is for.
+        if (_solver is { } promoted
+            && !_solverGaveBack
+            && _config.SolverDrives
+            && promoted.Usable()
+            && promoted.Records.Decide(territoryId, hasRoute: true, solverReady: true)
+                == Solver.DriverKind.SolverWithRouteFallback)
+        {
+            _exploring = true;
+            ActivePath = null;
+            State = RunState.Running;
+            promoted.Driver.Start();
+            Status = $"Territory {territoryId} is promoted — the solver is driving, " +
+                     $"\"{resolved.Name}\" is the way back in.";
+            _log(Status);
             return false;
         }
 
@@ -464,6 +494,32 @@ public sealed class RunController : IDisposable
     {
         _exploring = true;
         _frontier?.Start();
+    }
+
+    /// <summary>
+    /// A run the solver gave back goes to whatever else can drive it: the recorded route first —
+    /// relocalised into from wherever the character is standing, which is the whole promise of §8's
+    /// "solver with route fallback" — and the frontier navigator only when there is nothing
+    /// recorded to fall back into.
+    /// </summary>
+    private void HandBackFromSolver()
+    {
+        _exploring = false;
+
+        var territoryId = _lifecycle.RunKey.TerritoryId;
+        var resolved = _paths.Resolve(
+            territoryId,
+            _config.PreferredRoutes.GetValueOrDefault(territoryId),
+            wallToWall: _config.MatchRouteToRole,
+            isTank: _world.IsTank);
+
+        if (resolved is { IsRunnable: true })
+        {
+            Start(fromBeginning: false);
+            return;
+        }
+
+        StartFrontier();
     }
 
     /// <summary>Stops the run and releases everything it was holding.</summary>
@@ -611,8 +667,9 @@ public sealed class RunController : IDisposable
                 {
                     case Solver.SolverStatus.HandedOff:
                         solver.Driver.Stop("handed back");
-                        _log($"Solver gave the run back: {Status}. Exploring from here.");
-                        StartFrontier();
+                        _solverGaveBack = true;
+                        _log($"Solver gave the run back: {Status}.");
+                        HandBackFromSolver();
                         return;
 
                     case Solver.SolverStatus.Faulted:

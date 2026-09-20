@@ -51,6 +51,8 @@ public sealed class ShadowObserver : IPerception
     private readonly GapLog _gaps;
     private readonly AriadneIpc _ariadne;
     private readonly Arbiter _arbiter;
+    private readonly PromotionWatch? _promotion;
+    private readonly Func<bool> _solverDriving;
     private readonly Func<bool> _inDuty;
     private readonly Func<string> _runId;
     private readonly Action<string>? _log;
@@ -87,7 +89,9 @@ public sealed class ShadowObserver : IPerception
         Arbiter arbiter,
         Func<bool> inDuty,
         Func<string> runId,
-        Action<string>? log = null)
+        Action<string>? log = null,
+        PromotionWatch? promotion = null,
+        Func<bool>? solverDriving = null)
     {
         _world = world;
         _objectives = objectives;
@@ -102,6 +106,8 @@ public sealed class ShadowObserver : IPerception
         _inDuty = inDuty;
         _runId = runId;
         _log = log;
+        _promotion = promotion;
+        _solverDriving = solverDriving ?? (() => false);
     }
 
     public int LearnedCount => _learned.Count;
@@ -192,6 +198,10 @@ public sealed class ShadowObserver : IPerception
     private void End()
     {
         Save();
+
+        // The run's own verdict for the promotion record, written once the run is over.
+        _promotion?.NoteRunEnded(_scope.Territory);
+
         _active = false;
         _probe = null;
         _probing = null;
@@ -279,6 +289,10 @@ public sealed class ShadowObserver : IPerception
     private void NoteDecision(WorldModel.Snapshot snapshot)
     {
         _decision = _arbiter.Decide(snapshot);
+
+        // §8.2's evidence, taken every tick: the stage boundary is where a route commits to a plan,
+        // and it is the only place where "would the solver have done the same?" has an answer.
+        _promotion?.Observe(snapshot, _decision, _solverDriving(), _arbiter.Exploration.Destination);
 
         if (snapshot.Stage == _decisionStage)
             return;

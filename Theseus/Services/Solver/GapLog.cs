@@ -16,6 +16,13 @@ public enum GapKind
     /// <summary>Interacting did nothing, twice — learned as inert.</summary>
     Inert,
 
+    /// <summary>
+    /// The shadow would have gone somewhere else than the route did, at an objective boundary. Not a
+    /// failure: the route may be taking a shortcut worth learning as an override, and the gap log is
+    /// where a person notices which.
+    /// </summary>
+    DriverDisagreement,
+
     /// <summary>A gate whose unlock condition never became true.</summary>
     UnknownGate,
 

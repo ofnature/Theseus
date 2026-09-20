@@ -20,7 +20,8 @@ public sealed record SolverWiring(
     SolverDriver Driver,
     SolverRecordStore Records,
     string RecordsPath,
-    Func<bool> Usable)
+    Func<bool> Usable,
+    PromotionWatch Watch)
 {
     /// <summary>Counts a run for the promotion record: driven to the end, or given back.</summary>
     public void NoteRun(uint territory, bool fellBack, DateTime utcNow)

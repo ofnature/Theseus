@@ -184,26 +184,37 @@ public sealed class TheseusPlugin : IDalamudPlugin
         var frontierQuery = new Solver.ReachableFrontier(
             _ariadneIpc, () => world.PlayerPosition, message => Log.Warning(message));
 
+        var solverRecordPath = System.IO.Path.Combine(configDir, "solver.json");
+        var records = new Solver.SolverRecordStore(message => Log.Warning(message));
+        records.Load(solverRecordPath);
+
+        var watch = new Solver.PromotionWatch(
+            records,
+            gapLog,
+            () => _dutyLifecycle.RunKey.ToString(),
+            () => _ariadneIpc.CurrentCacheKey,
+            message => Log.Information(message),
+            solverRecordPath);
+
+        Solver.SolverDriver? driver = null;
+
         var perception = new Solver.ShadowObserver(
             world, objectiveReader, taxonomy, taxonomyPath,
             ghosts, frontierQuery, ledger, gapLog, _ariadneIpc, arbiter,
             () => _dutyLifecycle.IsInDuty,
             () => _dutyLifecycle.RunKey.ToString(),
-            message => Log.Information(message));
-
-        var solverRecordPath = System.IO.Path.Combine(configDir, "solver.json");
-        var records = new Solver.SolverRecordStore(message => Log.Warning(message));
-        records.Load(solverRecordPath);
+            message => Log.Information(message),
+            promotion: watch,
+            solverDriving: () => driver is { Status: Solver.SolverStatus.Driving });
 
         // The solver can drive when the user's switch is on and Ariadne is actually answering with a
         // grid. Anything less and the run keeps the driver it has today — failing open is the whole
         // point of the seam.
         Func<bool> usable = () => _config.SolverDrives && _ariadneIpc.IsConnected && frontierQuery.Grid is not null;
 
-        _solver = new Solver.SolverWiring(
-            perception, arbiter,
-            new Solver.SolverDriver(perception, arbiter, world, usable, message => Log.Information(message)),
-            records, solverRecordPath, usable);
+        driver = new Solver.SolverDriver(perception, arbiter, world, usable, message => Log.Information(message));
+
+        _solver = new Solver.SolverWiring(perception, arbiter, driver, records, solverRecordPath, usable, watch);
 
         _runController = new RunController(
             _config, _dutyLifecycle, _objectiveReader, _pathStore,
