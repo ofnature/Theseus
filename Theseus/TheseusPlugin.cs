@@ -13,6 +13,7 @@ using Theseus.Services.Paths;
 using Theseus.Services.Run;
 using Theseus.Windows;
 using Solver = Theseus.Services.Solver;
+using Fleet = Theseus.Services.Fleet;
 using static Theseus.Service;
 
 namespace Theseus;
@@ -52,6 +53,8 @@ public sealed class TheseusPlugin : IDalamudPlugin
     private readonly GameDutyEntryWorld _dutyEntryWorld;
     private readonly RunController _runController;
     private readonly Solver.SolverWiring _solver;
+    private readonly Fleet.RelayClient _relay;
+    private readonly Fleet.ClaimBoard _board;
     private readonly ConfigWindow _configWindow;
     private readonly RunWindow _runWindow;
     private readonly DebugWindow _debugWindow;
@@ -124,7 +127,30 @@ public sealed class TheseusPlugin : IDalamudPlugin
         // not pick what it already wrote off. Two caches would mean the loop retries its own ghosts.
         var ghosts = new Frontier.GhostCache();
 
+        // The fleet layer: who is taking which object. Inert solo, and inert with no relay — every
+        // claim is then granted locally and nothing is published.
+        var relay = new Fleet.RelayClient(PluginInterface, Log);
+        _relay = relay;
+        var board = new Fleet.ClaimBoard(
+            new Fleet.FleetRoster(world),
+            relay,
+            () => _dutyLifecycle.RunKey.ToString(),
+            () => world.UtcNow,
+            message => Log.Information(message));
+
+        relay.OnMessage += board.NoteMessage;
+        _board = board;
+
         var ledger = new Solver.GateLedger();
+        board.PeerBeyond += key =>
+        {
+            if (Fleet.ClaimRelay.ParseGateKey(key) is not { } gate)
+                return;
+
+            if (ledger.PeerBeyondNear(gate.GateId, gate.Beyond))
+                Log.Information($"Fleet: a peer is past the edge near ({gate.Beyond.X:0.#}, {gate.Beyond.Z:0.#}).");
+        };
+
         var interactables = new Solver.InteractableLoop(new Solver.InteractableContext(
             taxonomy,
             ghosts,
@@ -136,7 +162,18 @@ public sealed class TheseusPlugin : IDalamudPlugin
             WantedByAGate: dataId => ledger.Gates.Any(g =>
                 g.State == Solver.GateState.Locked && Solver.GateLedger.ObjectsNamedBy(g.Unlock).Contains(dataId)),
             Resolved: ledger.Resolved,
+            IsFree: target => board.StateOf(target) != Fleet.ClaimState.Deferred,
+            Claim: board.Claim,
+            Done: board.Done,
             Log: message => Log.Information(message)));
+
+        // A peer finishing an object is as good as this box finishing it (§1.4): the ledger stops
+        // waiting on it, and the loop stops considering it.
+        board.PeerDone += dataId =>
+        {
+            ledger.Resolved(dataId);
+            interactables.NoteResolved(dataId);
+        };
 
         var arbiter = new Solver.Arbiter(
             new Solver.CombatLoop(),
@@ -225,6 +262,7 @@ public sealed class TheseusPlugin : IDalamudPlugin
             _ariadneIpc.Describe,
             _runController.DescribeShadow,
             _runController.DescribeSolver,
+            _board.Describe,
             _runController.DescribeMovement,
             // Both agents, because which of them holds which system's roster is exactly the
             // question — reading one and assuming has been wrong twice.
@@ -256,6 +294,8 @@ public sealed class TheseusPlugin : IDalamudPlugin
     {
         CommandManager.RemoveHandler(CommandMain);
         CommandManager.RemoveHandler(CommandShort);
+
+        _relay.Dispose();
 
         PluginInterface.UiBuilder.Draw -= _windowSystem.Draw;
         PluginInterface.UiBuilder.OpenConfigUi -= OpenConfig;

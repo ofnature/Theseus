@@ -32,6 +32,9 @@ public sealed record InteractableContext(
     Func<string> CacheKey,
     Func<uint, bool>? WantedByAGate = null,
     Action<uint>? Resolved = null,
+    Func<WorldObject, bool>? IsFree = null,
+    Func<WorldObject, bool>? Claim = null,
+    Action<WorldObject, string>? Done = null,
     Action<string>? Log = null);
 
 /// <summary>
@@ -133,8 +136,16 @@ public sealed class InteractableLoop
             return;
         }
 
-        // In range, stopped, touching. The claim is the loop's own state, so the same object is not
-        // chosen twice by a second bidder in the same tick.
+        // In range, stopped, touching. The claim is taken here rather than when it was chosen, so a
+        // peer that claimed it first is honoured — one object, one box, which is the entire point.
+        if (_context.Claim is { } claim && !claim(target.Object))
+        {
+            _context.Log?.Invoke($"{target.Object.Name} is a peer's — leaving it alone.");
+            _phase = InteractPhase.None;
+            game.StopMoving();
+            return;
+        }
+
         game.StopMoving();
         _phase = InteractPhase.Interacting;
         _stageAtTouch = world.Stage;
@@ -169,6 +180,7 @@ public sealed class InteractableLoop
             && !_inert.Contains(o.Object.DataId)
             && _context.Taxonomy.Classify(o.Object.DataId) != BehaviourClass.Inert
             && !_context.Ghosts.IsGhost(o.Object)
+            && (_context.IsFree?.Invoke(o.Object) ?? true)
             && (o.Distance <= OpportunisticRadius || (_context.WantedByAGate?.Invoke(o.Object.DataId) ?? false)));
 
     /// <summary>
@@ -185,6 +197,7 @@ public sealed class InteractableLoop
         if (_target.Class == BehaviourClass.Discontinuity && moved > TransitJump)
         {
             _context.Log?.Invoke($"Dropping {_target.Object.Name}: a transit took over.");
+            _context.Done?.Invoke(_target.Object, "transit");
             _phase = InteractPhase.None;
             return;
         }
@@ -212,6 +225,7 @@ public sealed class InteractableLoop
         _context.Ghosts.Remember(_target.Object);
         _context.Taxonomy.Observe(_target.Object.DataId, observed);
         _context.Resolved?.Invoke(_target.Object.DataId);
+        _context.Done?.Invoke(_target.Object, "resolved");
         _context.Log?.Invoke($"{_target.Object.Name}: {why} — learned as {observed}.");
         _phase = InteractPhase.None;
     }
@@ -234,6 +248,7 @@ public sealed class InteractableLoop
         _inert.Add(dataId);
         _context.Taxonomy.Observe(dataId, BehaviourClass.Inert);
         _context.Ghosts.Remember(_target.Object);
+        _context.Done?.Invoke(_target.Object, "failed");
         _context.Gaps.Append(
             GapKind.Inert,
             _context.RunId(),

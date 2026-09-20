@@ -296,6 +296,23 @@ public sealed class GateLedger
         gate.Evidence = "a fleet peer reported being beyond it.";
     }
 
+    /// <summary>
+    /// A peer says it is past a gate. Matched by id first, then by where the gate leads, because two
+    /// boxes round their own frontier points differently and the same doorway comes out two yalms
+    /// apart. A gate nobody here can find is a note about a peer, not a gate to open.
+    /// </summary>
+    public bool PeerBeyondNear(string gateId, Vector3 beyond)
+    {
+        var gate = _gates.FirstOrDefault(g => g.Id == gateId)
+            ?? _gates.FirstOrDefault(g => Vector3.Distance(g.Beyond, beyond) <= 2f);
+
+        if (gate is null)
+            return false;
+
+        PeerBeyond(gate.Id);
+        return true;
+    }
+
     /// <summary>A new run: gates are per-run state, and the taxonomy is where learning persists.</summary>
     public void Reset()
     {
