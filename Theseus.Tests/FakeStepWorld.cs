@@ -15,6 +15,9 @@ public sealed class FakeStepWorld : IStepWorld
 
     public bool NavmeshReady { get; set; } = true;
 
+    /// <summary>Where a discontinuity is, so the arbiter can be tested with one in flight.</summary>
+    public Theseus.Services.Run.TransitPhase Transit { get; set; }
+
     public bool IsMoving { get; set; }
 
     /// <summary>-1 means "cannot tell", which is the safe default for tests that do not care.</summary>

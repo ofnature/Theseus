@@ -28,6 +28,7 @@ public class GateLedgerTests
             1,
             true,
             false,
+            false,
             objects ?? [],
             gates ?? [new GateCandidate(Frontier, Beyond)],
             null,

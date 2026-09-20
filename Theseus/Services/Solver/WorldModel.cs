@@ -50,6 +50,7 @@ public static class WorldModel
         int ObjectivesTotal,
         bool ObjectivesReadable,
         bool InCombat,
+        bool BossModuleActive,
         IReadOnlyList<Recognised> Objects,
         IReadOnlyList<GateCandidate> Gates,
         Vector3? Unexplored,
@@ -66,6 +67,16 @@ public static class WorldModel
 
         /// <summary>Nothing reachable is left unseen and nothing reachable lies beyond the window.</summary>
         public bool Explored => Unexplored is null && Exhausted;
+
+        /// <summary>The nearest object a loop cares about, or null. Nullable on purpose: a default
+        /// <see cref="Recognised"/> is a real object at the origin, and treating that as "none" is
+        /// how a loop ends up walking to (0, 0, 0).</summary>
+        public Recognised? Nearest(Func<Recognised, bool> predicate)
+            => Objects
+                .Where(o => !o.Done && predicate(o))
+                .OrderBy(o => o.Distance)
+                .Cast<Recognised?>()
+                .FirstOrDefault();
 
         private IEnumerable<Recognised> InReach(WorldObjectKind kind)
             => Objects.Where(o => o.Object.Kind == kind && !o.Done).OrderBy(o => o.Distance);
@@ -124,6 +135,7 @@ public static class WorldModel
             objectives.TotalCount,
             objectives.Available,
             world.InCombat,
+            world.BossModuleActive,
             objects,
             grid?.GateCandidates(position) ?? [],
             grid?.NearestUnexplored(position, entrance),

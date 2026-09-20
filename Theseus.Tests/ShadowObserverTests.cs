@@ -48,9 +48,13 @@ public class ShadowObserverTests
 
         public Taxonomy Taxonomy { get; } = new();
 
+        public GhostCache Ghosts { get; } = new();
+
         public GateLedger Ledger { get; } = new();
 
         public GapLog Gaps { get; }
+
+        public InteractableLoop Interactables { get; }
 
         public ShadowObserver Shadow { get; }
 
@@ -80,8 +84,17 @@ public class ShadowObserverTests
             var frontier = new ReachableFrontier(ariadne, () => World.PlayerPosition);
             var reader = new Reader(() => Stage);
 
-            Shadow = new ShadowObserver(World, reader, Taxonomy, TaxonomyPath, new GhostCache(), frontier,
-                Ledger, Gaps, ariadne, () => InDuty, () => "1314:103:0", Log.Add);
+            // The real loops and arbiter: the shadow's job here is to ask the same question the
+            // driver will, so a test that passes is a test about the real arbitration.
+            var interactables = new InteractableLoop(new InteractableContext(
+                Taxonomy, Ghosts, Gaps, () => "1314:103:0", () => "(1314) Mistwake"));
+            var arbiter = new Arbiter(new CombatLoop(), interactables,
+                new ExplorationLoop(() => Ledger.Gates), () => World.Transit);
+
+            Interactables = interactables;
+
+            Shadow = new ShadowObserver(World, reader, Taxonomy, TaxonomyPath, Ghosts, frontier,
+                Ledger, Gaps, ariadne, arbiter, () => InDuty, () => "1314:103:0", Log.Add);
         }
 
         public void Dispose()

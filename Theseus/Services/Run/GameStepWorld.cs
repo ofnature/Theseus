@@ -152,6 +152,13 @@ public sealed unsafe class GameStepWorld : IStepWorld
                : string.Empty);
 
     /// <summary>
+    /// Where the Ariadne mover is in a discontinuity, for the arbiter. Fails open: with vnavmesh
+    /// answering there is no transit state to report, and <see cref="TransitPhase.None"/> is what
+    /// every caller does without one.
+    /// </summary>
+    public TransitPhase Transit => Source == Config.NavSource.Ariadne ? _ariadneMover.Transit : TransitPhase.None;
+
+    /// <summary>
     /// Raw forward movement — the game's own auto-run, with no pathfinding involved.
     ///
     /// <para>

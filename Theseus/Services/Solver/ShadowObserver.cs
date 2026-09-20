@@ -45,6 +45,7 @@ public sealed class ShadowObserver
     private readonly GateLedger _ledger;
     private readonly GapLog _gaps;
     private readonly AriadneIpc _ariadne;
+    private readonly Arbiter _arbiter;
     private readonly Func<bool> _inDuty;
     private readonly Func<string> _runId;
     private readonly Action<string>? _log;
@@ -63,6 +64,10 @@ public sealed class ShadowObserver
     private Task<(string Result, List<Vector3> Waypoints, Vector3? Nearest, bool Partial)>? _probe;
     private Gate? _probing;
 
+    /// <summary>What the arbiter would grant right now. Nothing acts on it: this is the evidence.</summary>
+    private LoopDecision _decision = LoopDecision.Nothing;
+    private int _decisionStage = int.MinValue;
+
     /// <param name="taxonomyPath">Where the learned taxonomy is written — in the plugin's config directory.</param>
     public ShadowObserver(
         IStepWorld world,
@@ -74,6 +79,7 @@ public sealed class ShadowObserver
         GateLedger ledger,
         GapLog gaps,
         AriadneIpc ariadne,
+        Arbiter arbiter,
         Func<bool> inDuty,
         Func<string> runId,
         Action<string>? log = null)
@@ -87,6 +93,7 @@ public sealed class ShadowObserver
         _ledger = ledger;
         _gaps = gaps;
         _ariadne = ariadne;
+        _arbiter = arbiter;
         _inDuty = inDuty;
         _runId = runId;
         _log = log;
@@ -101,7 +108,8 @@ public sealed class ShadowObserver
         => _active || _ledger.Gates.Count > 0
             ? $"watching · learned {_learned.Count} object(s) · gates {_ledger.Gates.Count} " +
               $"({_ledger.OpenCount} open, {_ledger.PassedCount} passed) · gaps {_gaps.Written} · " +
-              $"frontier {_frontier.LastResult}"
+              $"frontier {_frontier.LastResult} · would be {_decision.Kind}: {_decision.Reason} · " +
+              $"{_arbiter.Interactables.Describe} · {_arbiter.Exploration.Describe}"
             : "idle";
 
     /// <summary>One tick of watching. Cheap and non-blocking; safe to call every frame.</summary>
@@ -131,6 +139,7 @@ public sealed class ShadowObserver
         LearnFromWhatLeft(snapshot);
         NoteGaps(snapshot);
         ObserveGates(snapshot);
+        NoteDecision(snapshot);
 
         _seen.Clear();
         foreach (var recognised in snapshot.Objects)
@@ -228,6 +237,28 @@ public sealed class ShadowObserver
                 nearby,
                 "seen by the shadow solver with no class in the taxonomy");
         }
+    }
+
+    /// <summary>
+    /// Asks the arbiter what it would run, and writes the answer down at every objective boundary.
+    ///
+    /// <para>
+    /// Nothing acts on this. It is the evidence the promotion decision is made from (§8.2): a
+    /// territory is ready to hand over when the solver's would-be decisions line up with what the
+    /// route actually did — at each stage, the next region it wanted was the one the route walked
+    /// to, and the object it wanted was the one the route touched. A run where those disagree is a
+    /// run with a gap, and the gap log says which kind.
+    /// </para>
+    /// </summary>
+    private void NoteDecision(WorldModel.Snapshot snapshot)
+    {
+        _decision = _arbiter.Decide(snapshot);
+
+        if (snapshot.Stage == _decisionStage)
+            return;
+
+        _decisionStage = snapshot.Stage;
+        _log?.Invoke($"Shadow solver: stage {snapshot.Stage} — it would be on {_decision.Kind}: {_decision.Reason}");
     }
 
     private void ObserveGates(WorldModel.Snapshot snapshot)

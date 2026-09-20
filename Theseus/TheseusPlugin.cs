@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Reflection;
 using Dalamud.Game.Command;
 using Dalamud.Interface.Windowing;
@@ -119,11 +120,35 @@ public sealed class TheseusPlugin : IDalamudPlugin
         var gapLog = new Solver.GapLog(
             System.IO.Path.Combine(configDir, "gaps.jsonl"), log: message => Log.Warning(message));
 
+        // One ghost cache for both halves: the model marks a ghosted object done, and the loop must
+        // not pick what it already wrote off. Two caches would mean the loop retries its own ghosts.
+        var ghosts = new Frontier.GhostCache();
+
+        var ledger = new Solver.GateLedger();
+        var interactables = new Solver.InteractableLoop(new Solver.InteractableContext(
+            taxonomy,
+            ghosts,
+            gapLog,
+            () => _dutyLifecycle.RunKey.ToString(),
+            () => _ariadneIpc.CurrentCacheKey,
+            // A lever a locked gate is waiting on is the frontier, not an errand: it is wanted from
+            // wherever the character happens to be standing.
+            WantedByAGate: dataId => ledger.Gates.Any(g =>
+                g.State == Solver.GateState.Locked && Solver.GateLedger.ObjectsNamedBy(g.Unlock).Contains(dataId)),
+            Resolved: ledger.Resolved,
+            Log: message => Log.Information(message)));
+
+        var arbiter = new Solver.Arbiter(
+            new Solver.CombatLoop(),
+            interactables,
+            new Solver.ExplorationLoop(() => ledger.Gates),
+            () => world.Transit);
+
         _shadow = new Solver.ShadowObserver(
             world, objectiveReader, taxonomy, taxonomyPath,
-            new Frontier.GhostCache(),
+            ghosts,
             new Solver.ReachableFrontier(_ariadneIpc, () => world.PlayerPosition, message => Log.Warning(message)),
-            new Solver.GateLedger(), gapLog, _ariadneIpc,
+            ledger, gapLog, _ariadneIpc, arbiter,
             () => _dutyLifecycle.IsInDuty,
             () => _dutyLifecycle.RunKey.ToString(),
             message => Log.Information(message));
