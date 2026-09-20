@@ -121,6 +121,19 @@ public sealed class TheseusConfig : IPluginConfiguration
     /// </summary>
     public bool ExploreUnmappedZones { get; set; } = true;
 
+    /// <summary>
+    /// Let the solver drive a duty that has no recorded route, instead of the frontier navigator.
+    ///
+    /// <para>
+    /// Only ever applies to territories with nothing recorded: a territory with a route keeps using
+    /// it, exactly as it does today. The solver hands a run back mid-way when it runs out of ideas,
+    /// and the frontier navigator takes over from there — so the worst case is a slower walk rather
+    /// than a stuck one. It also needs Ariadne answering with a reachable grid; without that there
+    /// is nothing to reason about and this is ignored.
+    /// </para>
+    /// </summary>
+    public bool SolverDrives { get; set; } = true;
+
     /// <summary>Stop after this many completed runs. 0 = keep going until stopped.</summary>
     public int RunLimit { get; set; }
 

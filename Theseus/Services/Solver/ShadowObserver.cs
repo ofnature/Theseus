@@ -28,10 +28,15 @@ namespace Theseus.Services.Solver;
 /// architecture's own signal, and it needs nothing but the object table.
 /// </para>
 /// </summary>
-public sealed class ShadowObserver
+public sealed class ShadowObserver : IPerception
 {
-    /// <summary>How far around the character the shadow looks. The same radius the model is asked for.</summary>
-    private const float ScanRadius = 40f;
+    /// <summary>How far around the character the shadow looks. Grows when the ladder's first rung asks it to.</summary>
+    private float _scanRadius = DefaultScanRadius;
+
+    public const float DefaultScanRadius = 40f;
+
+    /// <summary>The rung-1 widened radius: twice as far, for a solver that has run out of things to do.</summary>
+    public const float WidenedScanRadius = 80f;
 
     /// <summary>How much of the scan radius still counts as looking at the same place.</summary>
     private const float StillLooking = 0.75f;
@@ -103,6 +108,24 @@ public sealed class ShadowObserver
 
     public IReadOnlyList<Gate> Gates => _ledger.Gates;
 
+    /// <summary>
+    /// The snapshot this tick was built from — the same world the driver is about to act on, so a
+    /// decision and its evidence are never looking at two different frames. Null before the first
+    /// tick and between duties.
+    /// </summary>
+    public WorldModel.Snapshot? LastSnapshot { get; private set; }
+
+    /// <summary>Ladder rung 1: look twice as far, and re-ask every gate once.</summary>
+    public void Widen()
+    {
+        _scanRadius = WidenedScanRadius;
+        _ledger.RequestReprobe();
+        _frontier.Invalidate();
+    }
+
+    /// <summary>How far it is looking, for whoever is wondering why something went unnoticed.</summary>
+    public float ScanRadius => _scanRadius;
+
     /// <summary>One line for the debug window: what the shadow has seen and written down.</summary>
     public string Describe()
         => _active || _ledger.Gates.Count > 0
@@ -128,6 +151,7 @@ public sealed class ShadowObserver
         var objectives = _objectives.Read();
         var grid = _frontier.Refresh();
         var snapshot = WorldModel.Observe(_world, objectives, _taxonomy, _done, grid, _entrance, ScanRadius);
+        LastSnapshot = snapshot;
 
         if (!_active || snapshot.Scope != _scope)
             Begin(snapshot);
@@ -171,6 +195,8 @@ public sealed class ShadowObserver
         _active = false;
         _probe = null;
         _probing = null;
+        LastSnapshot = null;
+        _scanRadius = DefaultScanRadius;
         _log?.Invoke($"Shadow solver: {_learned.Count} object(s) learned, {_ledger.Gates.Count} gate(s) seen " +
                      $"({_ledger.OpenCount} open).");
         _ledger.Reset();

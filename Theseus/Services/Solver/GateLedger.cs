@@ -222,6 +222,16 @@ public sealed class GateLedger
         }
     }
 
+    /// <summary>
+    /// Ladder rung 1, from the other side: marks every locked gate worth asking about once more,
+    /// because a gate whose condition the run has not understood may still have opened.
+    /// </summary>
+    public void RequestReprobe()
+    {
+        foreach (var gate in _gates.Where(g => g.State == GateState.Locked))
+            gate.Due = true;
+    }
+
     /// <summary>The locked gates whose condition has moved since the last probe — the only ones worth asking about.</summary>
     public IReadOnlyList<Gate> DueForProbe() => [.. _gates.Where(g => g.State == GateState.Locked && g.Due)];
 

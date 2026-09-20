@@ -41,6 +41,17 @@ public class TheseusConfigTests
     }
 
     [Fact]
+    public void The_solver_drives_unrouted_zones_unless_it_is_told_not_to()
+    {
+        // A territory with a route is unaffected either way, so the default only reaches content
+        // that has nothing recorded and would otherwise go to the frontier navigator.
+        var config = new TheseusConfig();
+
+        Assert.True(config.SolverDrives);
+        Assert.True(config.ExploreUnmappedZones);
+    }
+
+    [Fact]
     public void Fleet_gates_have_a_peer_timeout_so_one_dead_box_cannot_freeze_the_run()
     {
         var config = new TheseusConfig();

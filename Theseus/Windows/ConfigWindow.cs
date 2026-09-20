@@ -271,6 +271,21 @@ public sealed class ConfigWindow : Window
             "dungeon's shape. What it buys is that new content works on the day it ships. Zones " +
             "that already have a route are unaffected.");
 
+        var solver = _config.SolverDrives;
+        if (ImGui.Checkbox("Let the solver drive zones with no recorded route", ref solver))
+        {
+            _config.SolverDrives = solver;
+            _save();
+        }
+
+        TheseusTheme.HelpMarker(
+            "Picks the solver's own route through the dungeon instead of the frontier navigator's: " +
+            "it fights what is in the way, takes what is worth taking, discovers the edges the " +
+            "mesh refuses and walks to ground nobody has looked at yet. It hands the run back to " +
+            "the frontier navigator when it runs out of ideas, so the worst case is a slower walk. " +
+            "Needs Ariadne answering with a reachable grid, and only ever applies to territories " +
+            "with no recorded route — everything with one runs exactly as it does today.");
+
         ImGui.SetNextItemWidth(180f);
         if (ImGui.BeginCombo("Pathfinding source", _config.NavSource == NavSource.Ariadne ? "Ariadne" : "vnavmesh"))
         {

@@ -6,6 +6,7 @@ using Theseus.Services.Duty;
 using Theseus.Services.Fleet;
 using Theseus.Services.Frontier;
 using Theseus.Services.Paths;
+using Solver = Theseus.Services.Solver;
 using Theseus.Services.Thread;
 
 namespace Theseus.Services.Run;
@@ -49,7 +50,7 @@ public sealed class RunController : IDisposable
     private readonly ObjectiveMapper _mapper = new();
     private readonly PathRecorder _recorder;
     private readonly FrontierNavigator? _frontier;
-    private readonly Solver.ShadowObserver? _shadow;
+    private readonly Solver.SolverWiring? _solver;
 
     /// <summary>
     /// True while the run is being driven by the frontier navigator rather than a recorded route.
@@ -102,7 +103,7 @@ public sealed class RunController : IDisposable
         Action<string> log,
         Func<uint, bool>? autoRunnableTerritory = null,
         FrontierNavigator? frontier = null,
-        Solver.ShadowObserver? solverShadow = null)
+        Solver.SolverWiring? solver = null)
     {
         _config = config;
         _lifecycle = lifecycle;
@@ -116,7 +117,7 @@ public sealed class RunController : IDisposable
         _log = log;
         _autoRunnableTerritory = autoRunnableTerritory ?? (_ => true);
         _frontier = frontier;
-        _shadow = solverShadow;
+        _solver = solver;
         _fleet = new FleetRoster(world);
         _gate = new FleetGate(world, _fleet, () => _config.PeerStaleSeconds);
 
@@ -153,7 +154,28 @@ public sealed class RunController : IDisposable
     /// What the solver's perception is doing, for the debug window. Diagnostic only: nothing here
     /// drives the character.
     /// </summary>
-    public string DescribeShadow() => _shadow?.Describe() ?? "off";
+    public string DescribeShadow() => _solver?.Perception.Describe() ?? "off";
+
+    /// <summary>
+    /// Who is driving, and what the solver would be doing if it were. Read together with
+    /// <see cref="DescribeShadow"/>: the driver decision is per territory and made from the record,
+    /// not from a setting.
+    /// </summary>
+    public string DescribeSolver()
+    {
+        if (_solver is not { } solver)
+            return "off";
+
+        var driver = solver.Driver;
+        var territory = _lifecycle.RunKey.TerritoryId;
+        var record = solver.Records.For(territory);
+
+        return $"{(driver.Status == Solver.SolverStatus.Idle ? "not driving" : driver.Status.ToString())} · " +
+               $"{driver.Detail} · driving {driver.RunsDriven}, given back {driver.RunsHandedBack} · " +
+               $"territory {territory}: {(record.Promoted ? "promoted" : "not promoted")}, " +
+               $"{record.ShadowAgreements}/{Solver.SolverRecordStore.AgreementsToPromote} agreements, " +
+               $"{record.SolverRuns} solver run(s), {record.SolverFallbacks} fallback(s)";
+    }
 
     /// <summary>
     /// What the executor is doing about movement right now, for the debug window. Diagnostic only.
@@ -177,7 +199,8 @@ public sealed class RunController : IDisposable
         _lifecycle.DutyStarted -= TryAutoStart;
         _lifecycle.RunEntered -= OnRunEntered;
         _lifecycle.RunLeft -= OnRunLeft;
-        _shadow?.Save();
+        _solver?.Perception.Save();
+        _solver?.Records.Save(_solver.RecordsPath);
         Stop("Plugin unloading.");
     }
 
@@ -354,12 +377,29 @@ public sealed class RunController : IDisposable
 
         if (resolved is null)
         {
+            // Nothing recorded here. This is the case the solver exists for: it drives the dungeon
+            // itself, with the frontier navigator behind it as the fallback for what it cannot do
+            // yet. A territory with a route never reaches this branch at all.
+            var kind = _solver is { } solver
+                ? solver.Records.Decide(territoryId, hasRoute: false, solverReady: solver.Usable())
+                : Solver.DriverKind.Route;
+
+            if (_solver is not null && kind == Solver.DriverKind.Solver && _config.ExploreUnmappedZones)
+            {
+                _exploring = true;
+                ActivePath = null;
+                State = RunState.Running;
+                _solver.Driver.Start();
+                Status = $"No route for territory {territoryId} — the solver is driving.";
+                _log(Status);
+                return false;
+            }
+
             // Nothing recorded here. Explore instead of refusing — that is the whole point of the
             // fallback, and it leaves the recorded-route path untouched for zones that have one.
             if (_frontier is not null && _config.ExploreUnmappedZones)
             {
-                _exploring = true;
-                _frontier.Start();
+                StartFrontier();
                 ActivePath = null;
                 State = RunState.Running;
                 Status = $"No route for territory {territoryId} — exploring.";
@@ -419,6 +459,13 @@ public sealed class RunController : IDisposable
         _log(Status);
     }
 
+    /// <summary>Hands the run to the frontier navigator: landmarks, overrides, and its own ladder.</summary>
+    private void StartFrontier()
+    {
+        _exploring = true;
+        _frontier?.Start();
+    }
+
     /// <summary>Stops the run and releases everything it was holding.</summary>
     public void Stop(string reason = "Stopped.")
     {
@@ -429,6 +476,15 @@ public sealed class RunController : IDisposable
         {
             _exploring = false;
             _frontier?.Stop();
+        }
+
+        // A solver run that ends is a data point for the promotion decision — driven through, or
+        // given back. Counted here rather than mid-run, because a run is only a run once it is over.
+        if (_solver is { } solver && solver.Driver.Status is Solver.SolverStatus.Driving or Solver.SolverStatus.HandedOff)
+        {
+            var fellBack = solver.Driver.Status == Solver.SolverStatus.HandedOff;
+            solver.Driver.Stop(reason);
+            solver.NoteRun(_lifecycle.RunKey.TerritoryId, fellBack, _world.UtcNow);
         }
 
         _entry.Cancel(reason);
@@ -518,9 +574,9 @@ public sealed class RunController : IDisposable
         _recorder.Tick();
 
         // The solver's perception does the same, and for the same reason: a run that was going to
-        // happen anyway is what teaches it the dungeon. It issues no movement, so it is safe beside
-        // every state below — including the ones that are not Theseus driving at all.
-        _shadow?.Tick();
+        // happen anyway is what teaches it the dungeon. It issues no movement of its own — whatever
+        // moves the character below moves it through the arbiter.
+        _solver?.Perception.Tick();
 
         if (State is RunState.Idle or RunState.Faulted)
             return;
@@ -531,8 +587,50 @@ public sealed class RunController : IDisposable
             return;
         }
 
-        if (_exploring && _frontier is not null)
+        if (_exploring)
         {
+            // The solver first, when this territory is its to drive, and the frontier navigator
+            // underneath it: a hand-back is not a failure, it is the next rung of the ladder.
+            if (_solver is { } solver && solver.Driver.Status == Solver.SolverStatus.Driving)
+            {
+                // The duty is over. Whatever is left is the exit, and the frontier navigator — which
+                // knows about the end-of-dungeon coffer and the leave — is better at that than a
+                // solver looking for something to do. No idle timers on the way out.
+                if (State == RunState.Exiting)
+                {
+                    solver.Driver.Stop("the duty is complete");
+                    _log("Duty complete — the solver is done driving this one.");
+                    StartFrontier();
+                    return;
+                }
+
+                solver.Driver.Tick();
+                Status = solver.Driver.Detail;
+
+                switch (solver.Driver.Status)
+                {
+                    case Solver.SolverStatus.HandedOff:
+                        solver.Driver.Stop("handed back");
+                        _log($"Solver gave the run back: {Status}. Exploring from here.");
+                        StartFrontier();
+                        return;
+
+                    case Solver.SolverStatus.Faulted:
+                        Fail(Status);
+                        return;
+
+                    default:
+                        State = ClassifyRunningState();
+                        return;
+                }
+            }
+
+            if (_frontier is null)
+            {
+                Fail("Nothing to drive with: no solver and no frontier navigation.");
+                return;
+            }
+
             _frontier.Tick();
             Status = _frontier.Detail;
 

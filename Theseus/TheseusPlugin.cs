@@ -51,7 +51,7 @@ public sealed class TheseusPlugin : IDalamudPlugin
     private readonly Frontier.ZoneOverrideStore _zoneOverrides;
     private readonly GameDutyEntryWorld _dutyEntryWorld;
     private readonly RunController _runController;
-    private readonly Solver.ShadowObserver _shadow;
+    private readonly Solver.SolverWiring _solver;
     private readonly ConfigWindow _configWindow;
     private readonly RunWindow _runWindow;
     private readonly DebugWindow _debugWindow;
@@ -144,14 +144,29 @@ public sealed class TheseusPlugin : IDalamudPlugin
             new Solver.ExplorationLoop(() => ledger.Gates),
             () => world.Transit);
 
-        _shadow = new Solver.ShadowObserver(
+        var frontierQuery = new Solver.ReachableFrontier(
+            _ariadneIpc, () => world.PlayerPosition, message => Log.Warning(message));
+
+        var perception = new Solver.ShadowObserver(
             world, objectiveReader, taxonomy, taxonomyPath,
-            ghosts,
-            new Solver.ReachableFrontier(_ariadneIpc, () => world.PlayerPosition, message => Log.Warning(message)),
-            ledger, gapLog, _ariadneIpc, arbiter,
+            ghosts, frontierQuery, ledger, gapLog, _ariadneIpc, arbiter,
             () => _dutyLifecycle.IsInDuty,
             () => _dutyLifecycle.RunKey.ToString(),
             message => Log.Information(message));
+
+        var solverRecordPath = System.IO.Path.Combine(configDir, "solver.json");
+        var records = new Solver.SolverRecordStore(message => Log.Warning(message));
+        records.Load(solverRecordPath);
+
+        // The solver can drive when the user's switch is on and Ariadne is actually answering with a
+        // grid. Anything less and the run keeps the driver it has today — failing open is the whole
+        // point of the seam.
+        Func<bool> usable = () => _config.SolverDrives && _ariadneIpc.IsConnected && frontierQuery.Grid is not null;
+
+        _solver = new Solver.SolverWiring(
+            perception, arbiter,
+            new Solver.SolverDriver(perception, arbiter, world, usable, message => Log.Information(message)),
+            records, solverRecordPath, usable);
 
         _runController = new RunController(
             _config, _dutyLifecycle, _objectiveReader, _pathStore,
@@ -167,7 +182,7 @@ public sealed class TheseusPlugin : IDalamudPlugin
             // The catalog holds dungeons only, so membership is the "may auto-start here" test.
             territory => _dutyCatalog.ByTerritory(territory) is not null,
             new Frontier.FrontierNavigator(world, _mapMarkers, _zoneOverrides, () => _config.LootChests),
-            _shadow);
+            _solver);
 
         // Published once the controller exists, so the gate never reports on a half-built run.
         // Daedalus reads a missing gate as idle, so appearing a moment late is harmless.
@@ -209,6 +224,7 @@ public sealed class TheseusPlugin : IDalamudPlugin
             world.DescribeMovement,
             _ariadneIpc.Describe,
             _runController.DescribeShadow,
+            _runController.DescribeSolver,
             _runController.DescribeMovement,
             // Both agents, because which of them holds which system's roster is exactly the
             // question — reading one and assuming has been wrong twice.

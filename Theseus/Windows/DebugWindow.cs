@@ -31,6 +31,7 @@ public sealed class DebugWindow : Window
     private readonly Func<string> _describeVnav;
     private readonly Func<string> _describeAriadne;
     private readonly Func<string> _describeShadow;
+    private readonly Func<string> _describeSolver;
     private readonly Func<string> _describeRun;
     private readonly Func<string> _describeCompanions;
 
@@ -41,6 +42,7 @@ public sealed class DebugWindow : Window
         Func<string> describeVnav,
         Func<string> describeAriadne,
         Func<string> describeShadow,
+        Func<string> describeSolver,
         Func<string> describeRun,
         Func<string> describeCompanions)
         : base("Theseus — Debug##TheseusDebug")
@@ -51,6 +53,7 @@ public sealed class DebugWindow : Window
         _describeVnav = describeVnav;
         _describeAriadne = describeAriadne;
         _describeShadow = describeShadow;
+        _describeSolver = describeSolver;
         _describeRun = describeRun;
         _describeCompanions = describeCompanions;
 
@@ -84,9 +87,10 @@ public sealed class DebugWindow : Window
     {
         TheseusTheme.SectionHeader("SOLVER (shadow)");
         ImGui.TextWrapped(_describeShadow());
+        ImGui.TextWrapped(_describeSolver());
 
         if (ImGui.Button("Copy solver"))
-            ImGui.SetClipboardText(_describeShadow());
+            ImGui.SetClipboardText($"{_describeShadow()}\n{_describeSolver()}");
     }
 
     /// <summary>
