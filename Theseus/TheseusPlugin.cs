@@ -14,6 +14,7 @@ using Theseus.Services.Run;
 using Theseus.Windows;
 using Solver = Theseus.Services.Solver;
 using Fleet = Theseus.Services.Fleet;
+using Diag = Theseus.Services.Diagnostics;
 using static Theseus.Service;
 
 namespace Theseus;
@@ -91,13 +92,15 @@ public sealed class TheseusPlugin : IDalamudPlugin
         _targetService = new TargetService(Service.TargetManager, _daedalusIpc);
 
         var chat = new ChatCommandSender(message => Log.Warning(message));
+        var bossMod = new BossModIpc(PluginInterface, chat.Send, message => Log.Warning(message));
+        var minerva = new MinervaIpc(PluginInterface, message => Log.Warning(message));
         var world = new GameStepWorld(
             ClientState, ObjectTable, PartyList, Condition, Service.GameGui,
             new VnavIpc(PluginInterface, message => Log.Warning(message)),
             _ariadneIpc,
             () => _config.NavSource,
-            new BossModIpc(PluginInterface, chat.Send, message => Log.Warning(message)),
-            new MinervaIpc(PluginInterface, message => Log.Warning(message)),
+            bossMod,
+            minerva,
             () => _config.BossHandler,
             () => _config.MinervaPreset,
             _daedalusIpc, _targetService, chat, message => Log.Information(message));
@@ -251,6 +254,17 @@ public sealed class TheseusPlugin : IDalamudPlugin
 
         _solver = new Solver.SolverWiring(perception, arbiter, driver, records, solverRecordPath, usable, watch);
 
+        // §10 step 1: the measurement recorder. Change-driven, and its own file, because nothing in
+        // a run ever reads it — it exists to be read by a person afterwards.
+        var signals = new Diag.SignalRecorder(
+            world, objectiveReader,
+            () => _dutyLifecycle.RunKey.TerritoryId,
+            () => _dutyLifecycle.IsInDuty,
+            System.IO.Path.Combine(configDir, "signals.jsonl"),
+            bossMod,
+            minerva,
+            message => Log.Warning(message));
+
         _runController = new RunController(
             _config, _dutyLifecycle, _objectiveReader, _pathStore,
             new StepExecutor(
@@ -265,7 +279,8 @@ public sealed class TheseusPlugin : IDalamudPlugin
             // The catalog holds dungeons only, so membership is the "may auto-start here" test.
             territory => _dutyCatalog.ByTerritory(territory) is not null,
             new Frontier.FrontierNavigator(world, _mapMarkers, _zoneOverrides, () => _config.LootChests),
-            _solver);
+            _solver,
+            signals);
 
         // Published once the controller exists, so the gate never reports on a half-built run.
         // Daedalus reads a missing gate as idle, so appearing a moment late is harmless.
@@ -309,6 +324,7 @@ public sealed class TheseusPlugin : IDalamudPlugin
             _runController.DescribeShadow,
             _runController.DescribeSolver,
             _board.Describe,
+            _runController.DescribeSignals,
             _runController.DescribeMovement,
             // Both agents, because which of them holds which system's roster is exactly the
             // question — reading one and assuming has been wrong twice.

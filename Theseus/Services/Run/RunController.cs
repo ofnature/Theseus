@@ -51,6 +51,7 @@ public sealed class RunController : IDisposable
     private readonly PathRecorder _recorder;
     private readonly FrontierNavigator? _frontier;
     private readonly Solver.SolverWiring? _solver;
+    private readonly Diagnostics.SignalRecorder? _signals;
 
     /// <summary>
     /// True while the run is being driven by the frontier navigator rather than a recorded route.
@@ -110,7 +111,8 @@ public sealed class RunController : IDisposable
         Action<string> log,
         Func<uint, bool>? autoRunnableTerritory = null,
         FrontierNavigator? frontier = null,
-        Solver.SolverWiring? solver = null)
+        Solver.SolverWiring? solver = null,
+        Diagnostics.SignalRecorder? signals = null)
     {
         _config = config;
         _lifecycle = lifecycle;
@@ -125,6 +127,7 @@ public sealed class RunController : IDisposable
         _autoRunnableTerritory = autoRunnableTerritory ?? (_ => true);
         _frontier = frontier;
         _solver = solver;
+        _signals = signals;
         _fleet = new FleetRoster(world);
         _gate = new FleetGate(world, _fleet, () => _config.PeerStaleSeconds);
 
@@ -162,6 +165,9 @@ public sealed class RunController : IDisposable
     /// drives the character.
     /// </summary>
     public string DescribeShadow() => _solver?.Perception.Describe() ?? "off";
+
+    /// <summary>What the signal recorder has written, for the debug window.</summary>
+    public string DescribeSignals() => _signals?.Describe() ?? "off";
 
     /// <summary>
     /// Who is driving, and what the solver would be doing if it were. Read together with
@@ -633,6 +639,10 @@ public sealed class RunController : IDisposable
         // happen anyway is what teaches it the dungeon. It issues no movement of its own — whatever
         // moves the character below moves it through the arbiter.
         _solver?.Perception.Tick();
+
+        // §10 step 1's measurement runs beside them, writing only what changed: the signals the
+        // solver is told not to assume, for a person to read back after the run.
+        _signals?.Tick();
 
         if (State is RunState.Idle or RunState.Faulted)
             return;

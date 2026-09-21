@@ -33,6 +33,7 @@ public sealed class DebugWindow : Window
     private readonly Func<string> _describeShadow;
     private readonly Func<string> _describeSolver;
     private readonly Func<string> _describeFleet;
+    private readonly Func<string> _describeSignals;
     private readonly Func<string> _describeRun;
     private readonly Func<string> _describeCompanions;
 
@@ -45,6 +46,7 @@ public sealed class DebugWindow : Window
         Func<string> describeShadow,
         Func<string> describeSolver,
         Func<string> describeFleet,
+        Func<string> describeSignals,
         Func<string> describeRun,
         Func<string> describeCompanions)
         : base("Theseus — Debug##TheseusDebug")
@@ -57,6 +59,7 @@ public sealed class DebugWindow : Window
         _describeShadow = describeShadow;
         _describeSolver = describeSolver;
         _describeFleet = describeFleet;
+        _describeSignals = describeSignals;
         _describeRun = describeRun;
         _describeCompanions = describeCompanions;
 
@@ -92,6 +95,7 @@ public sealed class DebugWindow : Window
         ImGui.TextWrapped(_describeShadow());
         ImGui.TextWrapped(_describeSolver());
         ImGui.TextWrapped(_describeFleet());
+        ImGui.TextWrapped(_describeSignals());
 
         if (ImGui.Button("Copy solver"))
             ImGui.SetClipboardText($"{_describeShadow()}\n{_describeSolver()}\n{_describeFleet()}");
