@@ -183,7 +183,10 @@ public sealed class TheseusPlugin : IDalamudPlugin
             new Solver.CombatLoop(),
             interactables,
             new Solver.ExplorationLoop(() => ledger.Gates),
-            () => world.Transit);
+            () => world.Transit,
+            // §2.5: an open, unpassed edge outranks a boss — the way on may be through it rather than
+            // past the thing standing in the way.
+            openGateWaiting: () => ledger.Gates.Any(g => g.State == Solver.GateState.Open));
 
         var frontierQuery = new Solver.ReachableFrontier(
             _ariadneIpc, () => world.PlayerPosition, message => Log.Warning(message));

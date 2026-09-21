@@ -122,11 +122,22 @@ public sealed class SolverDriver
         Detail = why;
     }
 
+    /// <summary>
+    /// Hands the run to a person rather than pretending: the solver keeps driving nothing, the
+    /// caller sees <see cref="SolverStatus.Faulted"/> and stops the run with the reason on screen.
+    /// </summary>
+    private void Fault(string why)
+    {
+        _game.StopMoving();
+        Status = SolverStatus.Faulted;
+        Detail = why;
+        _log?.Invoke($"Solver: {why}");
+    }
+
     public void Tick()
     {
         if (Status != SolverStatus.Driving)
             return;
-
         // The solver without a map is not a solver: if Ariadne stopped answering, everything below
         // would be guessing. Handing back is the whole of the recovery.
         if (!_usable())
@@ -151,9 +162,19 @@ public sealed class SolverDriver
                 return;
 
             case LoopKind.BossHandoff:
-                // The boss module has the fight. Standing still is the whole contribution.
+                // The boss module has the fight. Standing still is the whole contribution — unless
+                // nobody has it: a hostile standing off with no module to hand it to is the case
+                // §2.5 names, and ninety seconds of nothing happening is what a person needs to see.
                 _game.StopMoving();
                 NoteBusy();
+
+                if (!world.BossModuleActive && world.Nearest(o => o.Object.Kind == Services.Frontier.WorldObjectKind.Hostile) is { } stuck)
+                {
+                    Fault($"\"{stuck.Object.Name}\" is standing off {stuck.Distance:0}y away at " +
+                          $"({stuck.Object.Position.X:0.#}, {stuck.Object.Position.Y:0.#}, {stuck.Object.Position.Z:0.#}) " +
+                          "and no boss handler has a module for it — a person should look.");
+                }
+
                 return;
 
             case LoopKind.Combat:

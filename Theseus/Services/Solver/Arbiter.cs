@@ -68,23 +68,35 @@ public sealed class Arbiter
     /// <summary>How long combat holds the grant after the last hostile is gone or dead.</summary>
     private static readonly TimeSpan CombatSettle = TimeSpan.FromSeconds(1);
 
+    /// <summary>
+    /// How long a hostile has to stand off, with nowhere left to walk, before the fight stops being
+    /// the solver's. The architecture inherits the step executor's engage timeout here: ninety
+    /// seconds is long enough for a pack to come to you and for a walk to be attempted, and short
+    /// enough that a run does not spend a farm's worth of time in an arena's corner.
+    /// </summary>
+    public static readonly TimeSpan StandoffBefore = TimeSpan.FromSeconds(90);
+
     private readonly CombatLoop _combat;
     private readonly InteractableLoop _interactables;
     private readonly ExplorationLoop _exploration;
     private readonly Func<TransitPhase> _transit;
+    private readonly Func<bool> _openGateWaiting;
 
     private DateTime _combatEndedUtc = DateTime.MinValue;
+    private DateTime? _standoffSinceUtc;
 
     public Arbiter(
         CombatLoop combat,
         InteractableLoop interactables,
         ExplorationLoop exploration,
-        Func<TransitPhase> transit)
+        Func<TransitPhase> transit,
+        Func<bool>? openGateWaiting = null)
     {
         _combat = combat;
         _interactables = interactables;
         _exploration = exploration;
         _transit = transit;
+        _openGateWaiting = openGateWaiting ?? (() => false);
     }
 
     /// <summary>The loops, for whoever needs to report or drive them.</summary>
@@ -110,6 +122,16 @@ public sealed class Arbiter
             return new LoopDecision(LoopKind.BossHandoff, "a boss module is up");
         }
 
+        // §2.5's other trigger: a hostile that will not come to us, with nothing left to explore and
+        // nothing waiting on a lever. Walking to an arena boss is the combat loop's job and it does
+        // it while the hostile is inside aggro range; this is the case where it cannot.
+        if (BossStandoff(world))
+        {
+            _combatEndedUtc = world.UtcNow;
+            return new LoopDecision(LoopKind.BossHandoff,
+                "a hostile is standing off with nowhere left to walk");
+        }
+
         if (_combat.Bid(world) is { } combat)
         {
             _combatEndedUtc = world.UtcNow;
@@ -133,4 +155,33 @@ public sealed class Arbiter
 
     /// <summary>Wakes the settle timer — called when the boss module hands back to the solver.</summary>
     public void NoteCombatOver(DateTime utcNow) => _combatEndedUtc = utcNow;
+
+    /// <summary>
+    /// Whether the fight is standing off: exploration has nothing left, a hostile is there, no edge
+    /// is waiting to be taken, and none of that has changed for the engage timeout.
+    ///
+    /// <para>
+    /// Every clause is load-bearing. A dungeon with somewhere left to walk is not a standoff, it is a
+    /// walk — and an open unpassed gate is the one thing that outranks a boss, because the way on may
+    /// be through it rather than past the thing in the way. Combat resets the clock: a pack that
+    /// engages is a pack the combat loop can fight.
+    /// </para>
+    /// </summary>
+    private bool BossStandoff(WorldModel.Snapshot world)
+    {
+        if (!world.Explored || world.InCombat || _openGateWaiting())
+        {
+            _standoffSinceUtc = null;
+            return false;
+        }
+
+        if (world.Nearest(o => o.Object.Kind == Services.Frontier.WorldObjectKind.Hostile) is null)
+        {
+            _standoffSinceUtc = null;
+            return false;
+        }
+
+        _standoffSinceUtc ??= world.UtcNow;
+        return world.UtcNow - _standoffSinceUtc.Value >= StandoffBefore;
+    }
 }
