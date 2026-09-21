@@ -38,6 +38,10 @@ public sealed class TheseusPlugin : IDalamudPlugin
         Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "0.0.0";
 
     private readonly WindowSystem _windowSystem = new("Theseus");
+
+    /// <summary>How close a peer has to be to where a gate leads for that gate to count as open.</summary>
+    private const float PeerBeyondRadius = 6f;
+
     private readonly TheseusConfig _config;
     private readonly PluginPresence _presence;
     private readonly IObjectiveReader _objectiveReader;
@@ -212,7 +216,35 @@ public sealed class TheseusPlugin : IDalamudPlugin
         // point of the seam.
         Func<bool> usable = () => _config.SolverDrives && _ariadneIpc.IsConnected && frontierQuery.Grid is not null;
 
-        driver = new Solver.SolverDriver(perception, arbiter, world, usable, message => Log.Information(message));
+        var ladder = new Solver.LadderContext(
+            // Rung 2, observation rather than messages: a peer standing where a locked edge leads
+            // means the edge is open, and the party list already says where everybody is.
+            FleetSweep: () =>
+            {
+                var peers = new Fleet.FleetRoster(world).Players.Where(m => !m.IsSelf).ToList();
+
+                if (peers.Count == 0)
+                    return 0;
+
+                var opened = 0;
+
+                foreach (var gate in ledger.Gates.Where(g => g.State == Solver.GateState.Locked).ToList())
+                {
+                    if (!peers.Any(p => System.Numerics.Vector3.Distance(p.Position, gate.Beyond) <= PeerBeyondRadius))
+                        continue;
+
+                    ledger.PeerBeyond(gate.Id);
+                    opened++;
+                }
+
+                return opened;
+            },
+            RetryInteractables: interactables.RetryFailures,
+            OverrideWaypoint: () => _zoneOverrides
+                .Covering(_dutyLifecycle.RunKey.TerritoryId, world.PlayerPosition)?.To);
+
+        driver = new Solver.SolverDriver(
+            perception, arbiter, world, usable, ladder, message => Log.Information(message));
 
         _solver = new Solver.SolverWiring(perception, arbiter, driver, records, solverRecordPath, usable, watch);
 

@@ -170,8 +170,22 @@ public sealed class InteractableLoop
     public void NoteResolved(uint dataId)
     {
         _inert.Remove(dataId);
+        _failures.Remove(dataId);
+
         if (_phase != InteractPhase.None && _target.Object.DataId == dataId)
             _phase = InteractPhase.None;
+    }
+
+    /// <summary>
+    /// The ladder's rung 3: every object that failed gets one more go. The count exists to make
+    /// scenery inert over a run, and a climb is the moment to doubt the count rather than the object
+    /// — two interactions that did nothing may have been two interactions at the wrong moment.
+    /// </summary>
+    public int RetryFailures()
+    {
+        var count = _failures.Count;
+        _failures.Clear();
+        return count;
     }
 
     private WorldModel.Recognised? Choose(WorldModel.Snapshot world)

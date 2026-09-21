@@ -37,7 +37,7 @@ public sealed class SolverDriverTests
             Interactables = new InteractableLoop(new InteractableContext(
                 new Taxonomy(), new GhostCache(), gaps, () => "run", () => "key"));
             Arbiter = new Arbiter(new CombatLoop(), Interactables, new ExplorationLoop(() => Gates), () => Game.Transit);
-            Driver = new SolverDriver(Perception, Arbiter, Game, () => Usable, Log.Add);
+            Driver = new SolverDriver(Perception, Arbiter, Game, () => Usable, ladder: null, Log.Add);
             Driver.Start();
         }
 
@@ -128,15 +128,16 @@ public sealed class SolverDriverTests
         Assert.Equal(SolverStatus.Driving, f.Driver.Status);
         Assert.Equal(0, f.Perception.Widened);
 
-        // Ten seconds of nothing: look further.
+        // Ten seconds of nothing: look further. This is the ladder's first rung, and with no ladder
+        // context supplied there is nothing after it but the hand-back.
         f.Advance(11);
         f.Driver.Tick();
 
         Assert.Equal(1, f.Perception.Widened);
         Assert.Equal(SolverStatus.Driving, f.Driver.Status);
 
-        // Ten more, and the widened look found nothing either: this is the caller's run again.
-        f.Advance(11);
+        // Two minutes of nothing, widened included: this is the caller's run again.
+        f.Advance(110);
         f.Driver.Tick();
 
         Assert.Equal(SolverStatus.HandedOff, f.Driver.Status);
@@ -219,7 +220,7 @@ public sealed class SolverDriverTests
         // One widen first — that is the ladder's first rung, and it has to fail before rung 5.
         f.Advance(11);
         f.Driver.Tick();
-        f.Advance(11);
+        f.Advance(110);
         f.Driver.Tick();
 
         Assert.Equal(SolverStatus.HandedOff, f.Driver.Status);
