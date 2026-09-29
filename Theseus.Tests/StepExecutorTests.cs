@@ -317,6 +317,30 @@ public class StepExecutorTests
     }
 
     [Fact]
+    public void A_movement_fault_carries_the_navigators_own_account()
+    {
+        // Faults are read from screenshots. "No path" without what the navigator answered sent a
+        // diagnosis round three machines before anyone saw the one line that explained it.
+        var world = new FakeStepWorld
+        {
+            PlayerPosition = Vector3.Zero,
+            PathWaypointCount = 0,
+            MovementDetail = "source Ariadne [idle · last noRouteOnMesh]",
+        };
+        var executor = new StepExecutor(world);
+        executor.Start(Path(Step(StepVerb.MoveTo, new PathPoint(50, 0, 0))));
+
+        for (var i = 0; i < 20 && executor.Status == ExecutorStatus.Running; i++)
+        {
+            executor.Tick();
+            world.Advance(2);
+        }
+
+        Assert.Equal(ExecutorStatus.Faulted, executor.Status);
+        Assert.Contains("noRouteOnMesh", executor.FaultReason);
+    }
+
+    [Fact]
     public void A_waypoint_far_out_of_reach_is_never_quietly_accepted()
     {
         // Slack is for near misses only. Accepting a waypoint the character never got near would

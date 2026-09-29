@@ -71,6 +71,9 @@ public class AriadneMoverTests
         public bool NavReady = true;
         public bool AriadnePathRunning;
         public bool VnavPathfinding;
+
+        /// <summary>vnavmesh is loaded and throws on a move — no mesh of its own to path on.</summary>
+        public bool VnavRefuses;
         public int AriadneWaypointCount = 2;
         public DateTime Now = new(2026, 9, 20, 12, 0, 0, DateTimeKind.Utc);
 
@@ -130,12 +133,15 @@ public class AriadneMoverTests
             _pi.Setup(p => p.GetIpcSubscriber<Vector3, bool, bool>("vnavmesh.SimpleMove.PathfindAndMoveTo"))
                 .Returns(_vnavMove.Object);
             _vnavMove.Setup(s => s.InvokeFunc(It.IsAny<Vector3>(), It.IsAny<bool>()))
-                .Callback<Vector3, bool>((destination, _) =>
+                .Returns<Vector3, bool>((destination, _) =>
                 {
                     VnavMoveRequests.Add(destination);
+                    if (VnavRefuses)
+                        throw new System.Reflection.TargetInvocationException(new NullReferenceException());
+
                     VnavPathfinding = true;
-                })
-                .Returns(true);
+                    return true;
+                });
 
             _pi.Setup(p => p.GetIpcSubscriber<bool>("vnavmesh.SimpleMove.PathfindInProgress"))
                 .Returns(_vnavPathfinding.Object);
@@ -392,6 +398,78 @@ public class AriadneMoverTests
         Assert.Equal(("direct", true), (reported.Mode, reported.Success));
         Assert.Equal(XelphatolLip, reported.From);
         Assert.Equal(XelphatolLanding, reported.To);
+    }
+
+    /// <summary>
+    /// The Burn's entrance, as a user's log and Mnemosyne's CLI both answered it (2026-09-28):
+    /// <c>findPath: 31 waypoints partial [noRouteOnMesh]</c>, the route ending on a ledge four yalms
+    /// above the first waypoint.
+    /// </summary>
+    private static readonly Vector3 BurnEntrance = new(422.75f, 86.24f, 439.5f);
+    private static readonly Vector3 BurnLedge = new(278.6f, 69.9f, 337.9f);
+    private static readonly Vector3 BurnFirstWaypoint = new(278.85f, 65.85f, 334.46f);
+
+    [Fact]
+    public void A_partial_route_that_does_not_name_its_edge_is_still_walked_to_it()
+    {
+        // A partial route's last waypoint is the edge whether or not the answer names it. Without
+        // this, a service that leaves the point off costs the run the whole route: it is discarded
+        // and the move goes to the fallback instead of walking 31 good waypoints to the ledge.
+        var h = new Harness { Position = BurnEntrance };
+        h.Answer = () => Task.FromResult<(string, List<Vector3>, Vector3?, bool)>(
+            ("noRouteOnMesh", [BurnEntrance, BurnLedge], null, true));
+
+        Assert.True(h.Mover.Begin(BurnFirstWaypoint));
+        Assert.True(h.Mover.IsBusy);
+
+        Assert.Equal(TransitPhase.Approaching, h.Mover.Transit);
+        Assert.Single(h.AriadneMoveRequests); // the route Ariadne gave is the route that is walked
+        Assert.Empty(h.VnavMoveRequests);
+        Assert.Empty(h.Fallbacks);
+
+        // Arrived at the ledge: push off it, exactly as when the edge was named.
+        h.Position = BurnLedge;
+        h.AriadnePathRunning = false;
+        Assert.True(h.Mover.IsBusy);
+        Assert.Equal(TransitPhase.Pushing, h.Mover.Transit);
+        Assert.Equal([true], h.ForwardHolds);
+    }
+
+    [Fact]
+    public void A_fallback_vnavmesh_refuses_is_said_out_loud()
+    {
+        // vnavmesh loaded but holding no mesh of its own throws on the move. Silently, that reads
+        // as a stuck character; the run is owed the reason, once.
+        var h = new Harness { VnavRefuses = true };
+        h.Answer = () => Task.FromResult<(string, List<Vector3>, Vector3?, bool)>(("targetOffMesh", [], null, false));
+
+        h.Mover.Begin(Destination);
+        Assert.False(h.Mover.IsBusy); // nothing is driving, and the mover does not pretend otherwise
+
+        h.Mover.Begin(Destination);
+        Assert.False(h.Mover.IsBusy);
+
+        Assert.Single(h.Log, line => line.Contains("did not take the fallback"));
+        Assert.Contains("targetOffMesh", h.Mover.Describe());
+        Assert.Contains("did not take the fallback", h.Mover.Describe());
+    }
+
+    [Fact]
+    public void A_different_reason_for_falling_back_is_not_swallowed_by_the_first()
+    {
+        var h = new Harness();
+        h.Script(
+            () => Task.FromResult<(string, List<Vector3>, Vector3?, bool)>(("targetOffMesh", [], null, false)),
+            () => Task.FromResult<(string, List<Vector3>, Vector3?, bool)>(("targetOffMesh", [], null, false)),
+            () => Task.FromResult<(string, List<Vector3>, Vector3?, bool)>(("startOffMesh", [], null, false)));
+
+        for (var i = 0; i < 3; i++)
+        {
+            h.Mover.Begin(Destination);
+            _ = h.Mover.IsBusy;
+        }
+
+        Assert.Equal(2, h.Fallbacks.Count()); // one per reason, not one per move and not one per session
     }
 
     [Fact]

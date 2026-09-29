@@ -54,6 +54,16 @@ public interface IStepWorld
 
     void StopMoving();
 
+    /// <summary>
+    /// The path source's own account of the move in hand, for fault messages and the debug window.
+    ///
+    /// <para>
+    /// A fault is usually read from a screenshot, by someone who was not there. What the navigator
+    /// last answered is the first thing they need and the one thing the executor cannot know.
+    /// </para>
+    /// </summary>
+    string DescribeMovement();
+
     /// <summary>Raw forward movement, with no pathing — what <see cref="Paths.StepVerb.AutoMoveFor"/> uses.</summary>
     void SetForwardMovement(bool enabled);
 

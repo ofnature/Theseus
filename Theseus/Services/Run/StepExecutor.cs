@@ -682,7 +682,8 @@ public sealed class StepExecutor
                 return true;
 
             Fault($"Step {_index}: no path to ({destination.X:0.##}, {destination.Y:0.##}, " +
-                  $"{destination.Z:0.##}) — the waypoint may be off the navmesh.");
+                  $"{destination.Z:0.##}) — the waypoint may be off the navmesh. " +
+                  $"Navigator: {_world.DescribeMovement()}.");
             return false;
         }
 
@@ -736,9 +737,10 @@ public sealed class StepExecutor
             Fault($"Step {_index}: {MaxStuckMoves} moves to ({destination.X:0.##}, {destination.Y:0.##}, " +
                   $"{destination.Z:0.##}) and the character has not moved, jump included. " +
                   $"At ({here.X:0.##}, {here.Y:0.##}, {here.Z:0.##}), {distance:0.0}y out · " +
-                  $"vnav accepted {LastMoveAccepted}, moving {_world.IsMoving}, " +
+                  $"move accepted {LastMoveAccepted}, moving {_world.IsMoving}, " +
                   $"waypoints {_world.PathWaypointCount} · combat {_world.InCombat}, " +
-                  $"ready {_world.IsReady}, occupied {_world.IsOccupied}, casting {_world.IsCasting}.");
+                  $"ready {_world.IsReady}, occupied {_world.IsOccupied}, casting {_world.IsCasting}. " +
+                  $"Navigator: {_world.DescribeMovement()}.");
             return false;
         }
 

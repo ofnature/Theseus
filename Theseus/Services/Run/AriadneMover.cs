@@ -157,6 +157,12 @@ public sealed class AriadneMover
     private int _retries;
     private bool _fallbackWarned;
 
+    /// <summary>The reason last logged for a fallback, so a different one is not swallowed.</summary>
+    private string _fallbackReason = string.Empty;
+
+    /// <summary>The fallback itself was refused, and that has been said.</summary>
+    private bool _refusalWarned;
+
     /// <summary>
     /// True while the move in hand was handed to vnavmesh instead. Its state is then the one worth
     /// reporting: a fallback move is a real move, and the executor's stuck detector has to see it.
@@ -375,10 +381,17 @@ public sealed class AriadneMover
             return;
         }
 
-        if (IsTransitCandidate(result, partial, nearest))
+        // Where the route stops. The nav side names it when it can, and when it does not the route
+        // says the same thing itself: a partial route's last waypoint is the reachable ground
+        // nearest the goal, by construction. The Burn's entrance is the shape this guards — 31
+        // waypoints ending on a ledge four yalms above the first waypoint. A service that leaves
+        // the point off must not cost the run the whole route.
+        var edge = nearest ?? (partial && waypoints.Count > 0 ? waypoints[^1] : (Vector3?)null);
+
+        if (IsTransitCandidate(result, partial, edge))
         {
             _transit = TransitPhase.Approaching;
-            _transitEdge = nearest!.Value;
+            _transitEdge = edge!.Value;
             _lastAnswer = $"{result} — trying a transit to ({_transitEdge.X:0.#}, {_transitEdge.Y:0.#}, " +
                           $"{_transitEdge.Z:0.#}) ({_transitAttempts + 1}/{MaxTransitAttempts})";
 
@@ -560,14 +573,41 @@ public sealed class AriadneMover
     /// </summary>
     private bool FallBack(string reason)
     {
-        if (!_fallbackWarned)
+        // Once per reason rather than once per outage: the reason is the diagnosis, and a second
+        // one arriving behind an already-spent warning is exactly the line somebody will need.
+        if (!_fallbackWarned || reason != _fallbackReason)
         {
             _fallbackWarned = true;
+            _fallbackReason = reason;
             _log?.Invoke($"Ariadne could not route this move ({reason}) — using vnavmesh.");
         }
 
         _vnavOwnsTheMove = true;
-        return _vnav.MoveTo(_destination);
+
+        // Every way of arriving here leaves its reason behind, so the fault text and the debug
+        // line can say which one it was. A user's run gave a move up inside a single frame of
+        // Ariadne answering, and nothing on screen said whether the zone was unroutable, the
+        // answer was refused, or the walk to the edge had been dropped.
+        _lastAnswer = reason;
+
+        var taken = _vnav.MoveTo(_destination);
+        if (taken)
+        {
+            _refusalWarned = false;
+            return true;
+        }
+
+        // Nothing is driving. vnavmesh is absent, or loaded with no mesh of its own because the
+        // zone's mesh is being served by Ariadne — either way the safety net is not there, and a
+        // run that goes on re-asking once a second looks exactly like a character that is stuck.
+        _lastAnswer = $"{reason}; vnavmesh did not take the fallback";
+        if (!_refusalWarned)
+        {
+            _refusalWarned = true;
+            _log?.Invoke($"vnavmesh did not take the fallback either ({reason}) — nothing is driving this move.");
+        }
+
+        return false;
     }
 
     /// <summary>

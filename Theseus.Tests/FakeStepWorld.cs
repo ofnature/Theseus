@@ -143,6 +143,10 @@ public sealed class FakeStepWorld : IStepWorld
 
     public void StopMoving() => StopMovingCalls++;
 
+    public string MovementDetail { get; set; } = "fake navigator";
+
+    public string DescribeMovement() => MovementDetail;
+
     public void SetForwardMovement(bool enabled) => ForwardMovement.Add(enabled);
 
     public void Jump() => Jumps++;
