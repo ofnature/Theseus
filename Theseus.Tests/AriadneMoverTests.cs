@@ -455,6 +455,98 @@ public class AriadneMoverTests
     }
 
     [Fact]
+    public void A_partial_route_is_walked_when_the_fallback_does_not_exist()
+    {
+        // The Burn's last step, on a client in the fleet: 30 waypoints toward the goal, not a drop,
+        // and a vnavmesh that threw when handed the move. The route was discarded and the run
+        // faulted with "no path" while holding one.
+        var goal = new Vector3(-300f, 10f, -409f);
+        var h = new Harness { VnavRefuses = true, Position = new Vector3(-300f, 10f, -350f) };
+        h.Answer = () => Task.FromResult<(string, List<Vector3>, Vector3?, bool)>(
+            ("noRouteOnMesh", [new(-300f, 10f, -360f), new(-300f, 10f, -370f)], new Vector3(-300f, 10f, -370f), true));
+
+        h.Mover.Begin(goal);
+        Assert.True(h.Mover.IsBusy); // Ariadne is walking what it gave
+
+        Assert.Single(h.AriadneMoveRequests);
+        Assert.Equal(2, h.AriadneMoveRequests[0].Waypoints);
+        Assert.Single(h.Log, line => line.Contains("stop short of the goal"));
+        Assert.Contains("partial route", h.Mover.Describe());
+    }
+
+    /// <summary>
+    /// The Burn's last arena, probed through Mnemosyne's CLI (2026-09-28): the lip of the drop is
+    /// at z -366, the first meshed floor at z -381, and everything between answers
+    /// <c>startOffMesh</c> with that floor as the nearest point.
+    /// </summary>
+    private static readonly Vector3 BurnArenaLanding = new(-300f, 10f, -375f);
+    private static readonly Vector3 BurnArenaMesh = new(-300f, 10f, -380.8f);
+    private static readonly Vector3 MistDragon = new(-300.59f, 10f, -392.38f);
+
+    private static Func<Task<(string Result, List<Vector3> Waypoints, Vector3?, bool Partial)>> OffMeshNear(
+        Vector3 nearest)
+        => () => Task.FromResult<(string, List<Vector3>, Vector3?, bool)>(("startOffMesh", [], nearest, false));
+
+    [Fact]
+    public void A_character_off_the_mesh_walks_straight_back_onto_it()
+    {
+        var h = new Harness { Position = BurnArenaLanding };
+        h.Answer = OffMeshNear(BurnArenaMesh);
+
+        h.Mover.Begin(MistDragon);
+        Assert.True(h.Mover.IsBusy);
+
+        Assert.Single(h.AriadneMoveRequests);
+        Assert.Equal(1, h.AriadneMoveRequests[0].Waypoints); // one waypoint: the mesh, in a straight line
+        Assert.Empty(h.VnavMoveRequests);
+        Assert.Empty(h.Fallbacks);
+        Assert.Single(h.Log, line => line.Contains("Standing off the mesh"));
+    }
+
+    [Fact]
+    public void Mesh_that_is_a_long_way_off_is_not_walked_to_blind()
+    {
+        var h = new Harness { Position = BurnArenaLanding };
+        h.Answer = OffMeshNear(BurnArenaLanding + new Vector3(0f, 0f, -45f));
+
+        h.Mover.Begin(MistDragon);
+        _ = h.Mover.IsBusy;
+
+        Assert.Empty(h.AriadneMoveRequests);
+        Assert.Single(h.VnavMoveRequests); // the old answer: the other source
+    }
+
+    [Fact]
+    public void Mesh_on_another_level_is_not_walked_to_blind()
+    {
+        // The nearest mesh being a floor below means there is an edge between here and it.
+        var h = new Harness { Position = BurnArenaLanding };
+        h.Answer = OffMeshNear(BurnArenaLanding + new Vector3(0f, -9f, -4f));
+
+        h.Mover.Begin(MistDragon);
+        _ = h.Mover.IsBusy;
+
+        Assert.Empty(h.AriadneMoveRequests);
+        Assert.Single(h.VnavMoveRequests);
+    }
+
+    [Fact]
+    public void A_partial_route_that_leads_away_from_the_goal_is_not_walked()
+    {
+        // Halfway down a slope the nearest reachable ground is the lip above. A route to it is a
+        // route back up the drop.
+        var h = new Harness { VnavRefuses = true, Position = new Vector3(29f, 58f, 37f) };
+        var lip = new Vector3(27.5f, 61.5f, 39.2f);
+        h.Answer = () => Task.FromResult<(string, List<Vector3>, Vector3?, bool)>(("noRouteOnMesh", [lip], lip, true));
+
+        h.Mover.Begin(new Vector3(133f, 35f, 38f));
+        Assert.False(h.Mover.IsBusy);
+
+        Assert.Empty(h.AriadneMoveRequests);
+        Assert.Contains("did not take the fallback", h.Mover.Describe());
+    }
+
+    [Fact]
     public void A_different_reason_for_falling_back_is_not_swallowed_by_the_first()
     {
         var h = new Harness();

@@ -888,6 +888,263 @@ public class StepExecutorTests
         Assert.Equal([7ul], world.OpenedCofferIds);
     }
 
+    private static Theseus.Services.Frontier.WorldObject Mob(ulong id, Vector3 at, bool fighting = true)
+        => new(id, 9000, $"Mob {id}", at, Theseus.Services.Frontier.WorldObjectKind.Hostile, true, fighting);
+
+    [Fact]
+    public void An_auto_run_waits_for_the_character_to_land_before_moving_on()
+    {
+        // Off The Ghimlyt Dark's first drop: the second of auto-run ended with the character three
+        // yalms down a slope and still sliding, the next step asked for a path at once, and the
+        // mesh sent the character back up to the lip.
+        var world = new FakeStepWorld { PlayerPosition = new Vector3(0, 60, 0) };
+        var executor = new StepExecutor(world);
+        executor.Start(Path(Step(StepVerb.AutoMoveFor, arguments: "1000"), Step(StepVerb.Wait, arguments: "60000")));
+
+        executor.Tick();
+        world.Advance(1.1);
+        executor.Tick(); // pushing stops; the slide does not
+
+        for (var i = 0; i < 20; i++)
+        {
+            world.PlayerPosition += new Vector3(0.3f, -1f, 0); // still falling
+            world.Advance(0.1);
+            executor.Tick();
+        }
+
+        Assert.Equal(0, executor.CurrentStepIndex); // two seconds of sliding: still landing
+
+        for (var i = 0; i < 6; i++)
+        {
+            world.Advance(0.1); // stopped
+            executor.Tick();
+        }
+
+        Assert.Equal(1, executor.CurrentStepIndex); // still for 400 ms: landed, on to the next step
+        Assert.Contains(world.Logs, l => l.Contains("auto-run ended") && l.Contains("-20y in height"));
+    }
+
+    [Fact]
+    public void A_pack_fighting_us_out_of_reach_is_closed_on()
+    {
+        // The Ghimlyt Dark: packs drop in around the party at range, nothing steers the character
+        // to them, and each fight took a minute of standing while the Trust did the killing.
+        var world = new FakeStepWorld { PlayerPosition = Vector3.Zero, InCombat = true, IsMelee = true };
+        world.Nearby.Add(Mob(7, new Vector3(20, 0, 0)));
+        var executor = new StepExecutor(world);
+        executor.Start(Path(Step(StepVerb.MoveTo, new PathPoint(0, 0, 200))));
+
+        executor.Tick();
+
+        Assert.Equal([7ul], world.Attacked);
+        Assert.Single(world.MoveRequests);
+        Assert.InRange(Vector3.Distance(world.MoveRequests[0], new Vector3(20, 0, 0)), 2f, 3f); // a yalm inside melee reach
+        Assert.Equal(0, executor.CurrentStepIndex);
+        Assert.Contains(world.Logs, l => l.Contains("closing on Mob 7"));
+    }
+
+    [Fact]
+    public void A_mob_already_in_reach_is_left_to_the_rotation()
+    {
+        var world = new FakeStepWorld { PlayerPosition = Vector3.Zero, InCombat = true, IsMelee = true };
+        world.Nearby.Add(Mob(7, new Vector3(2, 0, 0)));
+        var executor = new StepExecutor(world);
+        executor.Start(Path(Step(StepVerb.MoveTo, new PathPoint(0, 0, 200))));
+
+        executor.Tick();
+        executor.Tick();
+
+        Assert.Equal([7ul], world.Attacked); // targeted once, not every frame
+        Assert.Empty(world.MoveRequests);
+    }
+
+    [Fact]
+    public void A_ranged_job_stops_at_cast_range()
+    {
+        var world = new FakeStepWorld { PlayerPosition = Vector3.Zero, InCombat = true, IsMelee = false };
+        world.Nearby.Add(Mob(7, new Vector3(28, 0, 0)));
+        var executor = new StepExecutor(world);
+        executor.Start(Path(Step(StepVerb.MoveTo, new PathPoint(0, 0, 200))));
+
+        executor.Tick();
+
+        Assert.Single(world.MoveRequests);
+        Assert.InRange(world.MoveRequests[0].X, 8.5f, 9.5f); // 19 yalms short of the mob
+    }
+
+    [Fact]
+    public void A_pack_that_is_not_fighting_is_not_pulled()
+    {
+        // Combat with something else does not license walking into the next pack.
+        var world = new FakeStepWorld { PlayerPosition = Vector3.Zero, InCombat = true, IsMelee = true };
+        world.Nearby.Add(Mob(7, new Vector3(15, 0, 0), fighting: false));
+        var executor = new StepExecutor(world);
+        executor.Start(Path(Step(StepVerb.MoveTo, new PathPoint(0, 0, 200))));
+
+        executor.Tick();
+
+        Assert.Empty(world.Attacked);
+        Assert.Empty(world.MoveRequests);
+        Assert.Equal(1, world.StopMovingCalls); // the plain combat hold, as before
+    }
+
+    [Fact]
+    public void A_boss_killed_on_the_walk_in_is_not_waited_for()
+    {
+        // The Burn's second boss, from a run's log: pulled during the waypoint before its step,
+        // killed there, and then "a boss is present but would not engage after 90 seconds" from a
+        // boss step that began in an empty arena.
+        var world = new FakeStepWorld { PlayerPosition = Vector3.Zero, EnemiesInRange = 50 };
+        world.Coffers[5] = new Vector3(50.5f, 0, 0);
+        var progress = 0;
+        var executor = new StepExecutor(world, lootBossChests: () => true, objectives: () => BossObjective(progress));
+        executor.Start(Path(
+            Step(StepVerb.MoveTo, new PathPoint(50, 0, 0)),
+            Step(StepVerb.Boss, new PathPoint(58, 0, 0))));
+
+        executor.Tick();
+
+        // Pulled on the way in. The run holds the waypoint for combat, as it does for any fight.
+        world.BossModuleActive = true;
+        world.InCombat = true;
+        for (var i = 0; i < 50; i++)
+        {
+            executor.Tick();
+            world.Advance(0.1);
+        }
+
+        Assert.Equal(0, executor.CurrentStepIndex);
+
+        // Dead, and the objective says so.
+        progress = 1;
+        world.BossModuleActive = false;
+        world.InCombat = false;
+        executor.Tick();
+
+        world.PlayerPosition = new Vector3(50, 0, 0); // the waypoint is reached; the boss step begins
+        RunToCompletion(executor, world, maxTicks: 400);
+
+        Assert.Equal(ExecutorStatus.Finished, executor.Status);
+        Assert.Equal([5ul], world.OpenedCofferIds);
+        Assert.Equal(50, world.EnemiesInRange); // nothing was pointed at: there was nothing to pull
+    }
+
+    [Fact]
+    public void A_fight_on_the_walk_in_that_gained_nothing_is_not_called_a_kill()
+    {
+        // A wipe, or trash in earshot of a loaded module. The boss is still standing, and the boss
+        // step has to go and fight it.
+        var world = new FakeStepWorld { PlayerPosition = Vector3.Zero, EnemiesInRange = 1 };
+        var executor = new StepExecutor(world, lootBossChests: () => true, objectives: () => BossObjective(0));
+        executor.Start(Path(
+            Step(StepVerb.MoveTo, new PathPoint(50, 0, 0)),
+            Step(StepVerb.Boss, new PathPoint(58, 0, 0))));
+
+        executor.Tick();
+        world.BossModuleActive = true;
+        world.InCombat = true;
+        executor.Tick();
+        world.BossModuleActive = false;
+        world.InCombat = false;
+
+        for (var i = 0; i < 60; i++) // past the settle, short of the stuck detector's patience
+        {
+            executor.Tick();
+            world.Advance(0.1);
+        }
+
+        world.PlayerPosition = new Vector3(50, 0, 0);
+        for (var i = 0; i < 40 && executor.Status == ExecutorStatus.Running; i++)
+        {
+            executor.Tick();
+            world.Advance(0.1);
+        }
+
+        Assert.Equal(1, executor.CurrentStepIndex); // on the boss step, and still working on it
+        Assert.Equal(0, world.EnemiesInRange);      // it went for the pull
+    }
+
+    [Fact]
+    public void A_boss_killed_elsewhere_is_not_credited_to_a_distant_boss_step()
+    {
+        var world = new FakeStepWorld { PlayerPosition = Vector3.Zero, EnemiesInRange = 1 };
+        var progress = 0;
+        var executor = new StepExecutor(world, lootBossChests: () => true, objectives: () => BossObjective(progress));
+        executor.Start(Path(
+            Step(StepVerb.MoveTo, new PathPoint(50, 0, 0)),
+            Step(StepVerb.Boss, new PathPoint(400, 0, 0))));
+
+        executor.Tick();
+        world.BossModuleActive = true;
+        world.InCombat = true;
+        executor.Tick();
+        progress = 1;
+        world.BossModuleActive = false;
+        world.InCombat = false;
+        executor.Tick();
+
+        world.PlayerPosition = new Vector3(50, 0, 0);
+        for (var i = 0; i < 20; i++)
+        {
+            executor.Tick();
+            world.Advance(0.1);
+        }
+
+        Assert.Equal(1, executor.CurrentStepIndex);
+        Assert.Contains(new Vector3(400, 0, 0), world.MoveRequests); // walking to the boss it still owes
+    }
+
+    [Fact]
+    public void The_approach_path_is_dropped_the_moment_the_boss_fight_begins()
+    {
+        // Prometheus: the pull came while the character was still walking to the marker, the path
+        // kept running into the fire wall, and Minerva — which stands aside for a foreign path —
+        // could not dodge.
+        var world = new FakeStepWorld { PlayerPosition = new Vector3(80, 0, 0) };
+        var executor = new StepExecutor(world);
+        executor.Start(Path(Step(StepVerb.Boss, new PathPoint(100, 0, 0))));
+
+        executor.Tick();
+        Assert.Single(world.MoveRequests); // approaching
+        var stopsBefore = world.StopMovingCalls;
+
+        world.IsMoving = true;
+        world.BossModuleActive = true;
+        world.InCombat = true;
+        executor.Tick();
+
+        Assert.Equal(stopsBefore + 1, world.StopMovingCalls); // the path is dropped for the fight
+        Assert.Single(world.MoveRequests);                     // and nothing is issued during it
+    }
+
+    [Fact]
+    public void A_module_that_is_up_a_wing_away_is_not_the_fight()
+    {
+        // The Burn, with Minerva: the module for the first boss came up two seconds into the slide
+        // down to it. Taken for the encounter, that stopped the run 59 yalms out, issuing nothing,
+        // until the character was walked in by hand.
+        var world = new FakeStepWorld { PlayerPosition = Vector3.Zero, BossModuleActive = true };
+        var executor = new StepExecutor(world);
+        executor.Start(Path(Step(StepVerb.Boss, new PathPoint(100, 0, 0))));
+
+        executor.Tick();
+
+        Assert.Equal([new Vector3(100, 0, 0)], world.MoveRequests); // still on its way to the boss
+    }
+
+    [Fact]
+    public void A_module_at_the_boss_is_the_fight()
+    {
+        var world = new FakeStepWorld { PlayerPosition = new Vector3(95, 0, 0), BossModuleActive = true };
+        var executor = new StepExecutor(world);
+        executor.Start(Path(Step(StepVerb.Boss, new PathPoint(100, 0, 0))));
+
+        executor.Tick();
+
+        Assert.Empty(world.MoveRequests); // the handler has the fight; nothing here steers
+        Assert.Equal(0, executor.CurrentStepIndex);
+    }
+
     [Fact]
     public void A_boss_step_does_not_complete_before_the_pull()
     {

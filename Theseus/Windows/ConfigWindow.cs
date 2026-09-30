@@ -347,8 +347,9 @@ public sealed class ConfigWindow : Window
             }
 
             TheseusTheme.HelpMarker(
-                "Minerva has no command to turn its AI on — Theseus claims this dodge preset instead. " +
-                "Create it in Minerva with auto-dodge enabled; its built-in Default preset has it off.");
+                "Optional. When Minerva has a preset by this name, Theseus applies it at the start of " +
+                "a run — clearance and arc margins included. Without one, Theseus switches Minerva's " +
+                "auto-dodge on directly. Either way it is only ever switched on, never off.");
         }
 
         var loot = _config.LootChests;

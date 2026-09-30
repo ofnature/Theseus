@@ -90,6 +90,12 @@ public interface IStepWorld
     /// </summary>
     bool IsTank { get; }
 
+    /// <summary>
+    /// The character fights in melee — a tank or a melee damage dealer. Decides how close trash
+    /// has to be brought before the rotation can do anything with it.
+    /// </summary>
+    bool IsMelee { get; }
+
     /// <summary>The game will accept a request to leave the instance right now.</summary>
     bool CanLeaveDuty { get; }
 
@@ -101,7 +107,10 @@ public interface IStepWorld
 
     // ── Combat ──
 
-    /// <summary>A boss module's state machine is running.</summary>
+    /// <summary>
+    /// A boss fight is in progress, as the selected boss handler tells it. Not merely "a module is
+    /// loaded": a handler that loads its module before the pull must not report one here.
+    /// </summary>
     bool BossModuleActive { get; }
 
     /// <summary>Hands the fight to, or takes it back from, BossMod's AI.</summary>

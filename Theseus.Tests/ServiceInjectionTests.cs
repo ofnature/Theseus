@@ -58,6 +58,6 @@ public class ServiceInjectionTests
             .GetProperties(BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.Static)
             .Count(p => p.GetCustomAttribute<PluginServiceAttribute>() is not null);
 
-        Assert.Equal(13, declared);
+        Assert.Equal(14, declared);
     }
 }

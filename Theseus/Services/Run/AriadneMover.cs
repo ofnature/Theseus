@@ -130,6 +130,19 @@ public sealed class AriadneMover
     private const float TransitMovement = 1f;
 
     /// <summary>
+    /// How far away meshed ground may be for a character standing off the mesh to simply walk to
+    /// it. A landing zone, not a journey: The Burn's last arena has no mesh for the first fifteen
+    /// yalms past the drop into it, and that is the case this is sized for.
+    /// </summary>
+    private const float RejoinReach = 20f;
+
+    /// <summary>
+    /// How far above or below the character that ground may be. Walking straight is only safe
+    /// across a floor — a nearest point on another level is a ledge or a pit between here and it.
+    /// </summary>
+    private const float RejoinStep = 3f;
+
+    /// <summary>
     /// Transits attempted for one move before giving the destination up as unreachable. Two: a
     /// first attempt walks to the nearest edge and steps off, and a second covers a route that
     /// landed on ground the mesh still refuses. A third would be the run arguing with the mesh.
@@ -162,6 +175,12 @@ public sealed class AriadneMover
 
     /// <summary>The fallback itself was refused, and that has been said.</summary>
     private bool _refusalWarned;
+
+    /// <summary>
+    /// The route Ariadne gave for the move in hand when it stopped short, kept in case the
+    /// fallback turns out not to exist.
+    /// </summary>
+    private List<Vector3>? _partialRoute;
 
     /// <summary>
     /// True while the move in hand was handed to vnavmesh instead. Its state is then the one worth
@@ -271,6 +290,7 @@ public sealed class AriadneMover
         _destination = destination;
         _transit = TransitPhase.None;
         _transitAttempts = 0;
+        _partialRoute = null;
         ReleaseForward();
 
         if (!_ariadne.NavReady)
@@ -372,6 +392,8 @@ public sealed class AriadneMover
         // Safe without await: a completed task whose faults were just handled carries an answer.
         var (result, waypoints, nearest, partial) = pending.Result;
 
+        _partialRoute = partial && waypoints.Count > 0 ? waypoints : null;
+
         if (waypoints.Count > 0 && !partial)
         {
             _fallbackWarned = false;
@@ -412,6 +434,22 @@ public sealed class AriadneMover
         }
 
         _lastAnswer = result;
+
+        // Standing off the mesh, with meshed ground close by on the same floor: walk to it. The
+        // path is ours — a single waypoint Ariadne follows without consulting the mesh — and the
+        // route proper is asked for again from there. Without this a drop that lands in a hole in
+        // the mesh is the end of the run: every request from inside it answers the same way, and
+        // there is nothing to fall back on.
+        if (result == "startOffMesh" && nearest is { } ground && CanWalkBackTo(ground))
+        {
+            var away = Vector3.Distance(_position(), ground);
+            _vnavOwnsTheMove = false;
+            _lastAnswer = $"startOffMesh — walking {away:0.#}y straight to the mesh";
+            _log?.Invoke($"Standing off the mesh — walking {away:0.#}y straight to it at " +
+                         $"({ground.X:0.#}, {ground.Y:0.#}, {ground.Z:0.#}).");
+            _ariadne.MoveToWithTolerance([ground], fly: false, tolerance: _tolerance);
+            return;
+        }
 
         if (result == "meshNotReady" && _retries < MaxRetries)
         {
@@ -456,6 +494,14 @@ public sealed class AriadneMover
         var horizontal = new Vector2(toGoal.X, toGoal.Z).Length();
 
         return horizontal <= TransitReach && _destination.Y <= edge.Y + TransitStepUp;
+    }
+
+    /// <summary>Whether meshed ground is near enough, and level enough, to walk straight to.</summary>
+    private bool CanWalkBackTo(Vector3 ground)
+    {
+        var offset = ground - _position();
+        return new Vector2(offset.X, offset.Z).Length() <= RejoinReach
+               && MathF.Abs(offset.Y) <= RejoinStep;
     }
 
     /// <summary>
@@ -597,9 +643,31 @@ public sealed class AriadneMover
             return true;
         }
 
-        // Nothing is driving. vnavmesh is absent, or loaded with no mesh of its own because the
-        // zone's mesh is being served by Ariadne — either way the safety net is not there, and a
-        // run that goes on re-asking once a second looks exactly like a character that is stuck.
+        // vnavmesh is absent, or loaded with no mesh of its own because the zone's mesh is being
+        // served by Ariadne — seen on every client in the fleet, so the safety net is not one.
+        // Ariadne's own route is then the best there is: it stops short, but it goes the right way,
+        // and walking it beats standing at the start of it. The executor decides what arriving
+        // short is worth, exactly as it does for any waypoint that cannot quite be reached.
+        // Only a route that gets nearer the goal. A partial route's end is the reachable ground
+        // nearest the goal, and from halfway down a slope that is the lip above: walking it took
+        // a character back up the drop it had just gone over.
+        if (_partialRoute is { Count: > 0 } route
+            && Vector3.Distance(route[^1], _destination) < Vector3.Distance(_position(), _destination) - 1f)
+        {
+            _vnavOwnsTheMove = false;
+            _lastAnswer = $"{reason}; vnavmesh did not take the fallback, walking Ariadne's partial route";
+            if (!_refusalWarned)
+            {
+                _refusalWarned = true;
+                _log?.Invoke($"vnavmesh did not take the fallback ({reason}) — walking the " +
+                             $"{route.Count} waypoints Ariadne gave, which stop short of the goal.");
+            }
+
+            return _ariadne.MoveToWithTolerance(route, fly: false, tolerance: _tolerance);
+        }
+
+        // Nothing is driving, and a run that goes on re-asking once a second looks exactly like a
+        // character that is stuck.
         _lastAnswer = $"{reason}; vnavmesh did not take the fallback";
         if (!_refusalWarned)
         {

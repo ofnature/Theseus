@@ -95,7 +95,7 @@ public sealed class TheseusPlugin : IDalamudPlugin
         var bossMod = new BossModIpc(PluginInterface, chat.Send, message => Log.Warning(message));
         var minerva = new MinervaIpc(PluginInterface, message => Log.Warning(message));
         var world = new GameStepWorld(
-            ClientState, ObjectTable, PartyList, Condition, Service.GameGui,
+            ClientState, ObjectTable, PartyList, Condition, Service.GameGui, Service.GameConfig,
             new VnavIpc(PluginInterface, message => Log.Warning(message)),
             _ariadneIpc,
             () => _config.NavSource,

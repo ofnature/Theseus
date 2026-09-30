@@ -24,10 +24,15 @@ public enum WorldObjectKind
 /// would believe it had killed them all.
 /// </para>
 /// </summary>
+/// <param name="InCombat">
+/// A hostile that is already fighting. What separates a pack that has been pulled — and must be
+/// closed on — from one that is standing around and must not be.
+/// </param>
 public readonly record struct WorldObject(
     ulong Id,
     uint DataId,
     string Name,
     Vector3 Position,
     WorldObjectKind Kind,
-    bool IsTargetable);
+    bool IsTargetable,
+    bool InCombat = false);

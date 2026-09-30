@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Numerics;
 using Dalamud.Game.ClientState.Conditions;
+using Dalamud.Game.Config;
 using Dalamud.Game.ClientState.Objects.Enums;
 using Dalamud.Game.ClientState.Objects.Types;
 using Dalamud.Plugin.Services;
@@ -37,6 +38,7 @@ public sealed unsafe class GameStepWorld : IStepWorld
     private readonly TargetService _targets;
     private readonly ChatCommandSender _chat;
     private readonly Action<string> _log;
+    private readonly AutoRun _autoRun;
 
     public GameStepWorld(
         IClientState clientState,
@@ -44,6 +46,7 @@ public sealed unsafe class GameStepWorld : IStepWorld
         IPartyList partyList,
         ICondition condition,
         IGameGui gameGui,
+        IGameConfig gameConfig,
         VnavIpc vnav,
         AriadneIpc ariadne,
         Func<Config.NavSource> navSource,
@@ -61,6 +64,11 @@ public sealed unsafe class GameStepWorld : IStepWorld
         _partyList = partyList;
         _condition = condition;
         _gameGui = gameGui;
+        _autoRun = new AutoRun(
+            () => gameConfig.TryGet(UiControlOption.MoveMode, out uint mode) ? mode : null,
+            mode => gameConfig.Set(UiControlOption.MoveMode, mode),
+            SendChatCommand,
+            log);
         _vnav = vnav;
         _ariadne = ariadne;
         _navSource = navSource;
@@ -168,13 +176,11 @@ public sealed unsafe class GameStepWorld : IStepWorld
     /// </para>
     ///
     /// <para>
-    /// The explicit <c>on</c>/<c>off</c> arguments are field-confirmed. Do not reduce this to a
-    /// bare <c>/automove</c>: as a toggle it would desync from our own idea of the state the first
-    /// time anything else moved the character.
+    /// Goes through <see cref="AutoRun"/>, which also holds the movement mode in Standard for as
+    /// long as the run lasts — in Legacy, auto-run follows the camera rather than the character.
     /// </para>
     /// </summary>
-    public void SetForwardMovement(bool enabled)
-        => SendChatCommand(enabled ? "/automove on" : "/automove off");
+    public void SetForwardMovement(bool enabled) => _autoRun.Set(enabled);
 
     public void Jump() => SendChatCommand("/generalaction Jump");
 
@@ -212,12 +218,24 @@ public sealed unsafe class GameStepWorld : IStepWorld
     /// </summary>
     private static readonly uint[] TankJobs = [1, 3, 19, 21, 32, 37];
 
+    /// <summary>Tanks plus the melee damage dealers, base classes included.</summary>
+    private static readonly uint[] MeleeJobs = [1, 3, 19, 21, 32, 37, 2, 4, 20, 22, 29, 30, 34, 39, 41];
+
     public bool IsTank
     {
         get
         {
             var job = _objectTable.LocalPlayer?.ClassJob.RowId;
             return job is not null && Array.IndexOf(TankJobs, job.Value) >= 0;
+        }
+    }
+
+    public bool IsMelee
+    {
+        get
+        {
+            var job = _objectTable.LocalPlayer?.ClassJob.RowId;
+            return job is not null && Array.IndexOf(MeleeJobs, job.Value) >= 0;
         }
     }
 
@@ -254,12 +272,29 @@ public sealed unsafe class GameStepWorld : IStepWorld
 
     // ── Combat ──
 
+    /// <summary>
+    /// A boss fight is in progress — which is not the same question for the two handlers.
+    ///
+    /// <para>
+    /// BossMod's module starts on the pull, so its being up is the fight. Minerva activates a
+    /// module as soon as the boss exists, long before anyone has touched it: in The Burn it logged
+    /// "activated module D131Hedetet" two seconds into the slide down to the first boss, with the
+    /// character still 100 yalms out. Read as "the fight has started", that stopped the run where
+    /// it stood, waiting for an encounter nobody had begun, until someone walked the character in
+    /// by hand. For Minerva the module only means a fight once combat has joined it.
+    /// </para>
+    /// </summary>
     public bool BossModuleActive
-        => _bossHandler() == Config.BossHandler.Minerva ? _minerva.HasActiveModule : _bossMod.HasActiveModule;
+        => _bossHandler() == Config.BossHandler.Minerva
+            // Minerva says whether the boss itself is fighting; a Minerva too old to say falls back
+            // to our own combat flag, which cannot tell the boss from trash pulled beside it.
+            ? _minerva.HasActiveModule && (_minerva.BossEngaged ?? InCombat)
+            : _bossMod.HasActiveModule;
 
     /// <summary>
-    /// Hands boss mechanics to whichever plugin is selected. For Minerva only "on" means anything: its
-    /// AI has no off switch short of releasing the preset slot, and the AI is never turned off anyway.
+    /// Hands boss mechanics to whichever plugin is selected. For Minerva only "on" means anything:
+    /// the AI is never turned off, and what is checked is that auto-dodge is actually on — by the
+    /// user's preset when there is one, directly when there is not.
     /// </summary>
     public void SetBossModAi(bool enabled)
     {
@@ -273,8 +308,18 @@ public sealed unsafe class GameStepWorld : IStepWorld
             return;
 
         var preset = _minervaPreset();
-        if (!_minerva.ApplyPreset(preset))
-            _log($"Minerva refused preset \"{preset}\" — create it in Minerva with auto-dodge on.");
+        _log(_minerva.EnsureAutoDodge(preset) switch
+        {
+            DodgeHandoff.PresetApplied => $"Minerva: preset \"{preset}\" applied, auto-dodge is on.",
+            DodgeHandoff.SwitchedOn => "Minerva: auto-dodge switched on.",
+            DodgeHandoff.AlreadyOn => "Minerva: auto-dodge is already on.",
+            DodgeHandoff.Off =>
+                "Minerva: auto-dodge is OFF and could not be switched on — another plugin holds " +
+                "Minerva's preset slot. Bosses will not be dodged until it is turned on in Minerva.",
+            _ =>
+                "Minerva: could not confirm auto-dodge — this Minerva predates the gates Theseus " +
+                "uses. Make sure auto-dodge is on in Minerva, or update it.",
+        });
     }
 
     public void SetRotationEnabled(bool enabled) => _daedalus.SetRotationEnabled(enabled);
@@ -285,8 +330,11 @@ public sealed unsafe class GameStepWorld : IStepWorld
         if (player is null)
             return false;
 
+        // Hostile, not merely attackable: allied NPCs are targetable battle characters too, and
+        // a pull that pointed at one reported a boss that would not engage for ninety seconds and
+        // faulted the run — twice, in two dungeons, on a dead boss's step.
         var target = _objectTable
-            .Where(o => o.ObjectKind == ObjectKind.BattleNpc && IsAttackable(o))
+            .Where(o => o.ObjectKind == ObjectKind.BattleNpc && IsHostile(o) && IsAttackable(o))
             .Where(o => Vector3.Distance(o.Position, player.Position) <= radius)
             .OrderBy(o => Vector3.Distance(o.Position, player.Position))
             .FirstOrDefault();
@@ -473,9 +521,13 @@ public sealed unsafe class GameStepWorld : IStepWorld
             if (o.EntityId == player.EntityId || Vector3.Distance(o.Position, player.Position) > radius)
                 continue;
 
+            // Enemies only. Allied soldiers stand in the same object kind — The Ghimlyt Dark's
+            // Doman fighters walk the whole dungeon beside the party — and the game's own hostile
+            // flag is what tells the two apart.
             var kind = o.ObjectKind switch
             {
-                ObjectKind.BattleNpc when IsAttackable(o) => Frontier.WorldObjectKind.Hostile,
+                ObjectKind.BattleNpc when IsHostile(o) && IsAttackable(o)
+                    => Frontier.WorldObjectKind.Hostile,
                 ObjectKind.Treasure => Frontier.WorldObjectKind.Treasure,
                 ObjectKind.EventObj => Frontier.WorldObjectKind.Interactable,
                 _ => (Frontier.WorldObjectKind?)null,
@@ -487,8 +539,10 @@ public sealed unsafe class GameStepWorld : IStepWorld
             var native = (FFXIVClientStructs.FFXIV.Client.Game.Object.GameObject*)o.Address;
             var targetable = native is not null && native->GetIsTargetable();
 
+            var fighting = o is IBattleChara chara && (chara.StatusFlags & StatusFlags.InCombat) != 0;
+
             found.Add(new Frontier.WorldObject(
-                o.GameObjectId, o.BaseId, o.Name.TextValue, o.Position, classified, targetable));
+                o.GameObjectId, o.BaseId, o.Name.TextValue, o.Position, classified, targetable, fighting));
         }
 
         return found;
@@ -584,6 +638,23 @@ public sealed unsafe class GameStepWorld : IStepWorld
         {
             _log($"Dialog \"{addonName}\" callback failed: {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// An enemy, by the game's own targeting classification — the test BossMod uses for the same
+    /// question. Dalamud's hostile status flag is not it: in The Ghimlyt Dark it was set on Hien,
+    /// Alisaie and the Doman allies alike, and a pull that trusted it reported a boss that would
+    /// not engage, on a friendly NPC, and faulted the run.
+    /// </summary>
+    private static bool IsHostile(IGameObject o)
+    {
+        if (o.ObjectKind != ObjectKind.BattleNpc)
+            return false;
+
+        var character = (FFXIVClientStructs.FFXIV.Client.Game.Character.Character*)o.Address;
+        return character is not null
+               && FFXIVClientStructs.FFXIV.Client.Game.ActionManager.ClassifyTarget(character)
+                  == FFXIVClientStructs.FFXIV.Client.Game.ActionManager.TargetCategory.Enemy;
     }
 
     private static bool IsAttackable(IGameObject o)

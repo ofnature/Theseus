@@ -102,6 +102,31 @@ public sealed class StepExecutor
     /// <summary>Search radius when a route names an object but its position is only approximate.</summary>
     private const float InteractSearchRadius = 10f;
 
+    /// <summary>
+    /// Stillness after an auto-run that counts as having landed, and the longest the landing is
+    /// waited for.
+    ///
+    /// <para>
+    /// An auto-run's timer says when to stop pushing, not when the character has arrived: a
+    /// one-second run off The Ghimlyt Dark's first drop ended with the character three yalms down
+    /// a 26-yalm slope and still sliding. The next step asked for a path at once, the mesh snapped
+    /// the start to the nearest ground — the lip above — and the follower walked the character back
+    /// up the slope it was meant to be falling down. Nothing may be asked for until the ground has
+    /// stopped moving.
+    /// </para>
+    /// </summary>
+    private static readonly TimeSpan LandingStill = TimeSpan.FromMilliseconds(400);
+    private static readonly TimeSpan LandingTimeout = TimeSpan.FromSeconds(6);
+
+    /// <summary>How far out a pack that is fighting us is looked for. A room.</summary>
+    private const float TrashScanRadius = 30f;
+
+    /// <summary>Close enough for a melee job to hit what it is standing next to.</summary>
+    private const float MeleeReach = 3.5f;
+
+    /// <summary>Close enough for a ranged job to be in range of everything it would cast at.</summary>
+    private const float RangedReach = 20f;
+
     private static readonly TimeSpan DefaultStepTimeout = TimeSpan.FromMinutes(3);
 
     /// <summary>
@@ -208,6 +233,18 @@ public sealed class StepExecutor
     /// </summary>
     private static readonly TimeSpan PhaseGrace = TimeSpan.FromSeconds(60);
 
+    /// <summary>
+    /// How long after a fight ends its objective is still allowed to arrive. The kill and the
+    /// objective ticking are the same event to a person and a frame or two apart to a reader.
+    /// </summary>
+    private static readonly TimeSpan ClearSettle = TimeSpan.FromSeconds(5);
+
+    /// <summary>
+    /// How far from a boss marker a fight may have ended and still be that boss. An arena, with
+    /// room for the walk in — not the next wing.
+    /// </summary>
+    private const float EarlyFightReach = 60f;
+
     private readonly IStepWorld _world;
     private readonly Func<bool> _wallToWall;
     private readonly Func<StepTuning> _tuning;
@@ -227,7 +264,27 @@ public sealed class StepExecutor
     private DutyObjectiveSnapshot _objectivesAtPull = DutyObjectiveSnapshot.Unavailable;
     private DateTime _moduleEndedUtc = DateTime.MinValue;
     private bool _phaseWaitLogged;
+
+    /// <summary>A boss fight is under way on a step that is not a boss step.</summary>
+    private bool _earlyFight;
+    private DutyObjectiveSnapshot _earlyFightObjectives = DutyObjectiveSnapshot.Unavailable;
+    private DateTime _earlyFightEndedUtc = DateTime.MinValue;
+    private int _earlyFightStep;
+
+    /// <summary>A boss died before its step began, and no boss step has accounted for it yet.</summary>
+    private bool _earlyClear;
+    private Vector3 _earlyClearAt;
+
+    /// <summary>The mob being closed on while the run holds for combat, or 0.</summary>
+    private ulong _trashTarget;
+    private DateTime _lastTrashMoveUtc = DateTime.MinValue;
+
     private bool _forwardMoving;
+    private Vector3 _autoRunFrom;
+    private bool _landing;
+    private DateTime _landingSinceUtc;
+    private DateTime _landingStillSinceUtc;
+    private Vector3 _landingWatch;
     private Vector3 _lastProgressPosition;
     private DateTime _lastMoveRequestUtc = DateTime.MinValue;
     private DateTime _lastPullAttemptUtc = DateTime.MinValue;
@@ -317,6 +374,9 @@ public sealed class StepExecutor
         _stepBegun = false;
         _stopForCombat = true;
         _bossAiRequested = false;
+        _earlyFight = false;
+        _earlyFightEndedUtc = DateTime.MinValue;
+        _earlyClear = false;
         _openedCoffers.Clear();
         FaultReason = string.Empty;
         Status = ExecutorStatus.Running;
@@ -414,6 +474,8 @@ public sealed class StepExecutor
 
         var step = _path.Steps[_index];
 
+        WatchForEarlyFight(step);
+
         if (!_stepBegun)
         {
             _stepBegun = true;
@@ -435,6 +497,7 @@ public sealed class StepExecutor
             _cofferstakenHere = 0;
             _chestSightingLogged = false;
             _moveIssued = false;
+            _landing = false;
             _failedPathfinds = 0;
             _stuckMoves = 0;
             _unstuckTried = false;
@@ -460,7 +523,14 @@ public sealed class StepExecutor
         // is exactly when a wall-to-wall pull does it.
         if (_stopForCombat && _world.InCombat && HasGroundToCover(step))
         {
-            _world.StopMoving();
+            // Holding for combat is not standing still. The rotation kills what is in reach and
+            // nothing else moves the character toward what is not — BossMod's AI used to, and
+            // Minerva does not steer at trash — so a pack that spawns at range, or a mob that
+            // stops short, was a fight the party finished without us. The Ghimlyt Dark's drop
+            // pods made it a minute a pack.
+            if (!EngageTrash())
+                _world.StopMoving();
+
             StopForwardMovement();
             _stepStartedUtc = _world.UtcNow; // combat time is not stuck time
             return;
@@ -774,11 +844,44 @@ public sealed class StepExecutor
             ? step.Position.ToVector3()
             : StepArguments.ParsePoint(First(step))?.ToVector3();
 
-        // The module is unambiguous: if it is up, this is the fight, wherever we happen to be.
-        if (_world.BossModuleActive)
+        // A boss that died on the way here has already had its fight. Without this the step
+        // arrives at an empty arena, finds something targetable to point at, and waits out the
+        // engage timeout for an encounter that is over — which is a fault, mid-dungeon, on a run
+        // that did nothing wrong.
+        if (!_bossEngaged && _earlyClear)
+        {
+            _earlyClear = false; // consumed or discarded: it must not reach the boss after this one
+
+            if (destination is null || Vector3.Distance(_earlyClearAt, destination.Value) <= EarlyFightReach)
+            {
+                _bossApproached = true;
+                _bossEngaged = true;
+                _objectivesAtPull = _earlyFightObjectives;
+                _world.Log($"Step {_index}: this boss was killed during step {_earlyFightStep}, " +
+                           "before its own step began — going straight to the chest.");
+            }
+        }
+
+        // The module is the fight once we are at the boss, or already in it. Not before: a module
+        // can be up while the character is a wing away — trash fought in earshot of a boss whose
+        // module is already loaded reads exactly like the encounter — and taking that for the
+        // fight ends with the step waiting out a phase grace and walking past a boss it never
+        // reached.
+        var atBoss = destination is null
+                     || Vector3.Distance(_world.PlayerPosition, destination.Value) <= BossPullRadius;
+
+        if (_world.BossModuleActive && (_bossEngaged || atBoss))
         {
             if (!_bossEngaged)
+            {
                 _objectivesAtPull = _objectives();
+
+                // The fight owns the character from here. The approach path is usually still in
+                // hand — the pull happens on the way to the marker — and a path that keeps running
+                // is a path the boss handler stands aside for: The Ghimlyt Dark's Prometheus walked
+                // the character into its fire wall with Minerva unable to dodge across it.
+                ReleaseHolds();
+            }
 
             _bossApproached = true;
             _bossEngaged = true;
@@ -797,7 +900,10 @@ public sealed class StepExecutor
         if (!_bossApproached)
         {
             if (_world.InCombat)
+            {
+                ReleaseHolds(); // trash on the way in: fight it where it is, not while walking on
                 return false;
+            }
 
             if (destination is not null
                 && Vector3.Distance(_world.PlayerPosition, destination.Value) > BossApproachTolerance)
@@ -812,7 +918,10 @@ public sealed class StepExecutor
         if (_world.InCombat)
         {
             if (!_bossEngaged)
+            {
                 _objectivesAtPull = _objectives();
+                ReleaseHolds();
+            }
 
             _bossEngaged = true;
             return false;
@@ -847,6 +956,125 @@ public sealed class StepExecutor
             Fault($"Step {_index}: a boss is present but would not engage after {BossEngageTimeout.TotalSeconds:0} seconds.");
 
         return false;
+    }
+
+    /// <summary>
+    /// Closes on the nearest mob that is already fighting us, and returns true while a move toward
+    /// it is in hand.
+    ///
+    /// <para>
+    /// Only mobs that are in combat: a pack standing further down the corridor is not ours to pull
+    /// and walking to it would be exactly the "drags the next pack in" failure the combat hold
+    /// exists to prevent. Reach is by role — a melee job has to stand next to it, a ranged job only
+    /// within cast range — and the target is set once, so the rotation and the targeting grace on
+    /// the Daedalus side are not fought every frame.
+    /// </para>
+    /// </summary>
+    private bool EngageTrash()
+    {
+        Frontier.WorldObject? nearest = null;
+        var nearestDistance = float.MaxValue;
+        var here = _world.PlayerPosition;
+
+        foreach (var o in _world.ScanNearby(TrashScanRadius))
+        {
+            if (o.Kind != Frontier.WorldObjectKind.Hostile || !o.IsTargetable || !o.InCombat)
+                continue;
+
+            var distance = Vector3.Distance(here, o.Position);
+            if (distance < nearestDistance)
+            {
+                nearest = o;
+                nearestDistance = distance;
+            }
+        }
+
+        if (nearest is not { } mob)
+        {
+            _trashTarget = 0;
+            return false;
+        }
+
+        var reach = _world.IsMelee ? MeleeReach : RangedReach;
+
+        if (_trashTarget != mob.Id)
+        {
+            _trashTarget = mob.Id;
+            _world.AttackObject(mob.Id);
+            if (nearestDistance > reach)
+                _world.Log($"Step {_index}: closing on {mob.Name} ({nearestDistance:0}y out).");
+        }
+
+        if (nearestDistance <= reach)
+            return false; // in reach: the rotation's job, and nothing to steer
+
+        if (_world.IsMoving || _world.UtcNow - _lastTrashMoveUtc < MoveRetryInterval)
+            return true;
+
+        _lastTrashMoveUtc = _world.UtcNow;
+
+        // A yalm inside reach rather than on top of the mob, which is neither reachable nor
+        // where anyone wants to stand.
+        var toward = Vector3.Normalize(mob.Position - here);
+        _world.MoveTo(mob.Position - toward * (reach - 1f));
+        return true;
+    }
+
+    /// <summary>
+    /// Notices a boss fight that happens on a step other than a boss step.
+    ///
+    /// <para>
+    /// Routes put the boss step a few yalms inside the arena and the waypoint before it a few yalms
+    /// outside, and a boss does not wait for the step index to catch up. The Burn's second boss sits
+    /// eight yalms past the previous waypoint: it was pulled on the walk in, fought and killed while
+    /// the run was still holding that waypoint for combat, and the boss step then began in an empty
+    /// room. The objective is what makes this safe to act on — a fight that ended with the duty
+    /// further along than it started was a boss, and it is dead.
+    /// </para>
+    /// </summary>
+    private void WatchForEarlyFight(ThreadStep step)
+    {
+        // A boss step keeps its own account of its own fight.
+        if (step.Verb == StepVerb.Boss)
+        {
+            _earlyFight = false;
+            _earlyFightEndedUtc = DateTime.MinValue;
+            return;
+        }
+
+        if (_world.BossModuleActive)
+        {
+            if (!_earlyFight)
+            {
+                _earlyFight = true;
+                _earlyFightObjectives = _objectives();
+                _earlyFightStep = _index;
+            }
+
+            _earlyFightEndedUtc = DateTime.MinValue; // still going, or going again
+            return;
+        }
+
+        if (!_earlyFight || _world.InCombat)
+            return;
+
+        if (_earlyFightEndedUtc == DateTime.MinValue)
+            _earlyFightEndedUtc = _world.UtcNow;
+
+        if (EncounterClassifier.Classify(_earlyFightObjectives, _objectives()) == EncounterOutcome.Cleared)
+        {
+            _earlyFight = false;
+            _earlyClear = true;
+            _earlyClearAt = _world.PlayerPosition;
+            _world.Log($"Step {_index}: a boss was killed here, ahead of its own step.");
+            return;
+        }
+
+        // Nothing gained and the settle is spent: a wipe, a reset, or a fight nobody can account
+        // for. Forgotten rather than guessed at — claiming a kill that did not happen would walk
+        // the run past a live boss.
+        if (_world.UtcNow - _earlyFightEndedUtc > ClearSettle)
+            _earlyFight = false;
     }
 
     /// <summary>
@@ -1032,14 +1260,48 @@ public sealed class StepExecutor
         if (_waitUntilUtc == DateTime.MinValue)
         {
             _waitUntilUtc = _world.UtcNow.AddMilliseconds(duration);
+            _autoRunFrom = _world.PlayerPosition;
             _world.SetForwardMovement(true);
             _forwardMoving = true;
         }
 
-        if (_world.UtcNow < _waitUntilUtc)
+        var now = _world.UtcNow;
+        var here = _world.PlayerPosition;
+
+        if (!_landing)
+        {
+            if (now < _waitUntilUtc)
+                return false;
+
+            StopForwardMovement();
+            _landing = true;
+            _landingSinceUtc = now;
+            _landingStillSinceUtc = now;
+            _landingWatch = here;
+            return false;
+        }
+
+        // Pushing has stopped; the ground may not have. Wait for the character to be still before
+        // the next step is allowed to ask where it is.
+        if (Vector3.Distance(here, _landingWatch) > 0.25f)
+        {
+            _landingWatch = here;
+            _landingStillSinceUtc = now;
+        }
+
+        if (now - _landingStillSinceUtc < LandingStill && now - _landingSinceUtc < LandingTimeout)
             return false;
 
-        StopForwardMovement();
+        _landing = false;
+
+        // Where it ended up is the whole outcome of this step and the one thing nothing else
+        // records. An auto-run exists to cross ground the mesh cannot route — a slide, a drop — so
+        // "ran nine seconds and is still on the same level" is a failure that otherwise only shows
+        // up as the next step having no path.
+        _world.Log($"Step {_index}: auto-run ended at ({here.X:0.#}, {here.Y:0.#}, {here.Z:0.#}) — " +
+                   $"{Vector3.Distance(here, _autoRunFrom):0.#}y from where it began, " +
+                   $"{here.Y - _autoRunFrom.Y:+0.#;-0.#;0}y in height" +
+                   $"{(now - _landingSinceUtc >= LandingTimeout ? ", still moving when the wait ran out" : string.Empty)}.");
         return true;
     }
 
