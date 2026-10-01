@@ -55,6 +55,19 @@ public interface IStepWorld
     void StopMoving();
 
     /// <summary>
+    /// Whether the mesh routes on foot from one point to another, and not by a detour many times
+    /// the distance. True when the mesh cannot be asked: an unknown answer must never be reported
+    /// as a gap in the mesh.
+    /// </summary>
+    System.Threading.Tasks.Task<bool> CanWalk(Vector3 from, Vector3 to);
+
+    /// <summary>
+    /// Tells the nav side that the character got from one point to another where the mesh has no
+    /// walking route — the evidence that corrects where drops, slides and rides really land.
+    /// </summary>
+    void ReportCrossing(Vector3 from, Vector3 to);
+
+    /// <summary>
     /// The path source's own account of the move in hand, for fault messages and the debug window.
     ///
     /// <para>
@@ -197,6 +210,9 @@ public interface IStepWorld
     Vector3? NearestReachablePoint(Vector3 near, float halfExtent);
 
     bool IsDataIdTargetable(uint dataId);
+
+    /// <summary>Where the nearest object with this data id is, or null when none is present.</summary>
+    Vector3? PositionOfDataId(uint dataId);
 
     bool IsDataIdSpawned(uint dataId);
 

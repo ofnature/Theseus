@@ -936,11 +936,50 @@ public class StepExecutorTests
 
         executor.Tick();
 
-        Assert.Equal([7ul], world.Attacked);
+        Assert.Empty(world.Attacked); // walks toward it; the rotation does the targeting
         Assert.Single(world.MoveRequests);
         Assert.InRange(Vector3.Distance(world.MoveRequests[0], new Vector3(20, 0, 0)), 2f, 3f); // a yalm inside melee reach
         Assert.Equal(0, executor.CurrentStepIndex);
         Assert.Contains(world.Logs, l => l.Contains("closing on Mob 7"));
+    }
+
+    [Fact]
+    public void Two_mobs_at_nearly_the_same_distance_do_not_trade_the_target_back_and_forth()
+    {
+        // The Ghimlyt Dark: a Secutor and an Eques two yalms apart in distance, and the loop
+        // retargeted between them on every frame as the walk changed which was nearer.
+        var world = new FakeStepWorld { PlayerPosition = Vector3.Zero, InCombat = true, IsMelee = true };
+        world.Nearby.Add(Mob(1, new Vector3(21, 0, 0)));
+        world.Nearby.Add(Mob(2, new Vector3(0, 0, 23)));
+        var executor = new StepExecutor(world);
+        executor.Start(Path(Step(StepVerb.MoveTo, new PathPoint(0, 0, 200))));
+
+        executor.Tick();
+        world.Advance(1.1);
+        world.PlayerPosition = new Vector3(0, 0, 3); // now mob 2 is the nearer by a yalm
+        executor.Tick();
+        world.Advance(1.1);
+        world.PlayerPosition = new Vector3(3, 0, 0); // and back
+        executor.Tick();
+
+        Assert.Equal(3, world.MoveRequests.Count);
+        Assert.All(world.MoveRequests, m => Assert.True(m.X > 15f && m.Z < 5f)); // every walk toward mob 1
+    }
+
+    [Fact]
+    public void A_clearly_nearer_mob_takes_over()
+    {
+        var world = new FakeStepWorld { PlayerPosition = Vector3.Zero, InCombat = true, IsMelee = true };
+        world.Nearby.Add(Mob(1, new Vector3(21, 0, 0)));
+        var executor = new StepExecutor(world);
+        executor.Start(Path(Step(StepVerb.MoveTo, new PathPoint(0, 0, 200))));
+
+        executor.Tick();
+        world.Advance(1.1);
+        world.Nearby.Add(Mob(2, new Vector3(0, 0, 6))); // one runs straight at us
+        executor.Tick();
+
+        Assert.True(world.MoveRequests[^1].Z > 2f && world.MoveRequests[^1].X < 1f); // turned toward mob 2
     }
 
     [Fact]
@@ -954,7 +993,7 @@ public class StepExecutorTests
         executor.Tick();
         executor.Tick();
 
-        Assert.Equal([7ul], world.Attacked); // targeted once, not every frame
+        Assert.Empty(world.Attacked);
         Assert.Empty(world.MoveRequests);
     }
 

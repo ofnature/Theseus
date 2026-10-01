@@ -54,6 +54,21 @@ public sealed class RunController : IDisposable
     private readonly Diagnostics.SignalRecorder? _signals;
 
     /// <summary>
+    /// Watches for crossings in every duty, whoever is driving. The fleet runs dungeons every day,
+    /// and each landing it makes is ground truth about where a drop or a slide really goes — which
+    /// is exactly what the zone-file listing on the nav side guessed wrong by fifty yalms.
+    /// </summary>
+    private readonly CrossingWatch _crossings = new();
+
+    /// <summary>Notices a wipe's respawn, so the route re-localises instead of keeping a stale step.</summary>
+    private readonly RespawnWatch _respawns = new();
+
+    /// <summary>Takes the dungeon's shortcut back to the last checkpoint after a wipe, when there is one.</summary>
+    private ShortcutRecovery? _shortcut;
+    private System.Threading.Tasks.Task<bool>? _crossingCheck;
+    private (System.Numerics.Vector3 From, System.Numerics.Vector3 To) _crossingCandidate;
+
+    /// <summary>
     /// True while the run is being driven by the frontier navigator rather than a recorded route.
     ///
     /// <para>
@@ -531,6 +546,7 @@ public sealed class RunController : IDisposable
     /// <summary>Stops the run and releases everything it was holding.</summary>
     public void Stop(string reason = "Stopped.")
     {
+        _shortcut?.Cancel();
         _singleStepIndex = -1;
         _runOnArrival = false;
 
@@ -643,6 +659,8 @@ public sealed class RunController : IDisposable
         // §10 step 1's measurement runs beside them, writing only what changed: the signals the
         // solver is told not to assume, for a person to read back after the run.
         _signals?.Tick();
+
+        WatchForCrossings();
 
         if (State is RunState.Idle or RunState.Faulted)
             return;
@@ -764,6 +782,32 @@ public sealed class RunController : IDisposable
             return;
         }
 
+        // A respawn elsewhere makes the step index a lie: the character is at the entrance or a
+        // checkpoint, not where the step expects. Take the shortcut back to the last boss when the
+        // dungeon offers one, then re-localise exactly as a person pressing Resume would.
+        if (_respawns.Observe(_world.IsDead, _world.IsReady, _world.PlayerPosition)
+            && ActivePath is not null && _singleStepIndex < 0)
+        {
+            _executor.Stop();
+            _shortcut ??= new ShortcutRecovery(_world);
+            _shortcut.Begin();
+            Status = "Respawned — looking for the shortcut back.";
+            _log("Respawned away from where the character died — looking for the shortcut back.");
+            return;
+        }
+
+        if (_shortcut is { Active: true } recovery)
+        {
+            if (!recovery.Tick())
+                return;
+
+            _log(recovery.Used
+                ? "Took the shortcut — resuming the route from the checkpoint."
+                : "No shortcut to take — resuming the route from here.");
+            Start();
+            return;
+        }
+
         if (HoldingForFleet())
             return;
 
@@ -829,6 +873,34 @@ public sealed class RunController : IDisposable
 
         Status = _gate.Detail;
         return true;
+    }
+
+    /// <summary>
+    /// Proposes crossings from the character's movement, asks the mesh about each, and reports the
+    /// ones the mesh cannot walk. One question in flight at a time; a crossing proposed while one is
+    /// being checked waits for the next descent, which costs nothing but a duplicate.
+    /// </summary>
+    private void WatchForCrossings()
+    {
+        if (_crossingCheck is { IsCompleted: true } check)
+        {
+            _crossingCheck = null;
+            if (check.IsCompletedSuccessfully && !check.Result)
+                _world.ReportCrossing(_crossingCandidate.From, _crossingCandidate.To);
+        }
+
+        if (!_lifecycle.IsInDuty)
+        {
+            _crossings.Reset();
+            return;
+        }
+
+        if (_crossings.Observe(_world.UtcNow, _world.PlayerPosition, _world.IsReady, _world.InCombat) is { } crossing
+            && _crossingCheck is null)
+        {
+            _crossingCandidate = crossing;
+            _crossingCheck = _world.CanWalk(crossing.From, crossing.To);
+        }
     }
 
     /// <summary>

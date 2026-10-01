@@ -94,6 +94,10 @@ public sealed class TheseusPlugin : IDalamudPlugin
         var chat = new ChatCommandSender(message => Log.Warning(message));
         var bossMod = new BossModIpc(PluginInterface, chat.Send, message => Log.Warning(message));
         var minerva = new MinervaIpc(PluginInterface, message => Log.Warning(message));
+        // What each event object is for, from the game's own sheet: mechanism, scenery, exit or
+        // shortcut. Built before the world, which filters its scan through it.
+        var eventObjects = new Frontier.EventObjectCatalog(DataManager, message => Log.Warning(message));
+
         var world = new GameStepWorld(
             ClientState, ObjectTable, PartyList, Condition, Service.GameGui, Service.GameConfig,
             new VnavIpc(PluginInterface, message => Log.Warning(message)),
@@ -103,7 +107,8 @@ public sealed class TheseusPlugin : IDalamudPlugin
             minerva,
             () => _config.BossHandler,
             () => _config.MinervaPreset,
-            _daedalusIpc, _targetService, chat, message => Log.Information(message));
+            _daedalusIpc, _targetService, chat, message => Log.Information(message),
+            eventObjects.RoleOf);
 
 
         _pathStore = new PathStore(
@@ -126,6 +131,15 @@ public sealed class TheseusPlugin : IDalamudPlugin
         var taxonomyPath = System.IO.Path.Combine(configDir, "taxonomy.json");
         var taxonomy = new Solver.Taxonomy(log: message => Log.Warning(message));
         taxonomy.Load(taxonomyPath);
+
+        // Learned before perception could tell a mechanism from scenery: an exit, a barrier and a
+        // marker were all filed as pickups. Every client cleans its own file on load.
+        var forgotten = taxonomy.Forget(id => eventObjects.RoleOf(id) == Frontier.EventObjectRole.Mechanism);
+        if (forgotten > 0)
+        {
+            taxonomy.Save(taxonomyPath);
+            Log.Information($"Taxonomy: forgot {forgotten} object(s) the game says are not mechanisms.");
+        }
 
         var gapLog = new Solver.GapLog(
             System.IO.Path.Combine(configDir, "gaps.jsonl"), log: message => Log.Warning(message));

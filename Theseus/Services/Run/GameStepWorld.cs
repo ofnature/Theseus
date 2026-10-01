@@ -39,6 +39,10 @@ public sealed unsafe class GameStepWorld : IStepWorld
     private readonly ChatCommandSender _chat;
     private readonly Action<string> _log;
     private readonly AutoRun _autoRun;
+    private readonly Func<uint, Frontier.EventObjectRole>? _eventObjectRole;
+
+    /// <summary>Crossings already reported, so the same one is not counted twice in quick succession.</summary>
+    private readonly List<(Vector3 From, Vector3 To, DateTime At)> _reported = [];
 
     public GameStepWorld(
         IClientState clientState,
@@ -57,8 +61,10 @@ public sealed unsafe class GameStepWorld : IStepWorld
         DaedalusIpc daedalus,
         TargetService targets,
         ChatCommandSender chat,
-        Action<string> log)
+        Action<string> log,
+        Func<uint, Frontier.EventObjectRole>? eventObjectRole = null)
     {
+        _eventObjectRole = eventObjectRole;
         _clientState = clientState;
         _objectTable = objectTable;
         _partyList = partyList;
@@ -72,7 +78,8 @@ public sealed unsafe class GameStepWorld : IStepWorld
         _vnav = vnav;
         _ariadne = ariadne;
         _navSource = navSource;
-        _ariadneMover = new AriadneMover(ariadne, vnav, () => PlayerPosition, SetForwardMovement, log: log);
+        _ariadneMover = new AriadneMover(ariadne, vnav, () => PlayerPosition, SetForwardMovement, log: log,
+            reportCrossing: ReportCrossing);
         _bossMod = bossMod;
         _minerva = minerva;
         _bossHandler = bossHandler;
@@ -432,6 +439,8 @@ public sealed unsafe class GameStepWorld : IStepWorld
 
     public bool IsDataIdSpawned(uint dataId) => NearestWithDataId(dataId, float.MaxValue) is not null;
 
+    public Vector3? PositionOfDataId(uint dataId) => NearestWithDataId(dataId, float.MaxValue)?.Position;
+
     public int? NamePlateIconId(uint dataId)
     {
         var target = NearestWithDataId(dataId, float.MaxValue);
@@ -529,7 +538,10 @@ public sealed unsafe class GameStepWorld : IStepWorld
                 ObjectKind.BattleNpc when IsHostile(o) && IsAttackable(o)
                     => Frontier.WorldObjectKind.Hostile,
                 ObjectKind.Treasure => Frontier.WorldObjectKind.Treasure,
-                ObjectKind.EventObj => Frontier.WorldObjectKind.Interactable,
+
+                // Only what runs a gimmick. Walls, markers and barriers run no event at all, and the
+                // exit and the shortcut are not the solver's to use while it explores.
+                ObjectKind.EventObj when IsMechanism(o.BaseId) => Frontier.WorldObjectKind.Interactable,
                 _ => (Frontier.WorldObjectKind?)null,
             };
 
@@ -646,6 +658,52 @@ public sealed unsafe class GameStepWorld : IStepWorld
     /// Alisaie and the Doman allies alike, and a pull that trusted it reported a boss that would
     /// not engage, on a friendly NPC, and faulted the run.
     /// </summary>
+    private bool IsMechanism(uint dataId)
+        => _eventObjectRole is null || _eventObjectRole(dataId) == Frontier.EventObjectRole.Mechanism;
+
+    /// <summary>Longest a walking route may be, as a multiple of the straight line, and still count as walkable.</summary>
+    private const float WalkDetourLimit = 3f;
+
+    // A continuation rather than an await: this class is unsafe, and C# does not allow awaiting in
+    // an unsafe context. A faulted pathfind reads as walkable, like every other non-answer.
+    public System.Threading.Tasks.Task<bool> CanWalk(Vector3 from, Vector3 to)
+        => _ariadne.PathfindDetailed(from, to, fly: false).ContinueWith(
+            t => !t.IsCompletedSuccessfully || Walkable(from, to, t.Result.Result, t.Result.Waypoints, t.Result.Partial),
+            System.Threading.Tasks.TaskContinuationOptions.ExecuteSynchronously);
+
+    private static bool Walkable(Vector3 from, Vector3 to, string result, List<Vector3> waypoints, bool partial)
+    {
+        // Only a definite "no" is a gap. Everything that is not an answer — the service down, the
+        // mesh loading — reads as walkable, so nothing is reported on a guess.
+        if (result is "noRouteOnMesh" or "startOffMesh" or "targetOffMesh" || (partial && waypoints.Count > 0))
+            return false;
+
+        if (waypoints.Count < 2)
+            return true;
+
+        float length = 0;
+        for (var i = 1; i < waypoints.Count; i++)
+            length += Vector3.Distance(waypoints[i - 1], waypoints[i]);
+
+        // A route that exists but goes the long way round: the drop is a shortcut the mesh does not
+        // know about, which is worth reporting as much as one it cannot reach at all.
+        return length <= Vector3.Distance(from, to) * WalkDetourLimit + 10f;
+    }
+
+    public void ReportCrossing(Vector3 from, Vector3 to)
+    {
+        var now = DateTime.UtcNow;
+        _reported.RemoveAll(r => now - r.At > TimeSpan.FromMinutes(1));
+
+        if (_reported.Any(r => Vector3.Distance(r.From, from) < 8f && Vector3.Distance(r.To, to) < 8f))
+            return;
+
+        _reported.Add((from, to, now));
+        _ = _ariadne.ReportTraversal(from, to, "direct", true);
+        _log($"Crossing reported to Ariadne: ({from.X:0.#}, {from.Y:0.#}, {from.Z:0.#}) → " +
+             $"({to.X:0.#}, {to.Y:0.#}, {to.Z:0.#}), {from.Y - to.Y:0.#}y down — the mesh has no walking route for it.");
+    }
+
     private static bool IsHostile(IGameObject o)
     {
         if (o.ObjectKind != ObjectKind.BattleNpc)

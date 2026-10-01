@@ -216,6 +216,53 @@ public class ShadowObserverTests
     }
 
     [Fact]
+    public void Several_things_vanishing_at_once_is_the_world_changing_not_a_pickup()
+    {
+        // The duty clears, a wipe resets the room: every prop goes at once. That taught "pickup"
+        // for an exit, a barrier and a marker in the first field runs.
+        using var h = new Harness();
+        h.World.PlayerPosition = Vector3.Zero;
+        h.World.Nearby.Add(At(WorldObjectKind.Interactable, Lever, new Vector3(3f, 0f, 0f), id: 1));
+        h.World.Nearby.Add(At(WorldObjectKind.Interactable, Lever + 1, new Vector3(4f, 0f, 0f), id: 2));
+        h.World.Nearby.Add(At(WorldObjectKind.Interactable, Lever + 2, new Vector3(5f, 0f, 0f), id: 3));
+        h.Shadow.Tick();
+
+        h.World.Nearby.Clear();
+        h.Shadow.Tick();
+
+        Assert.Equal(0, h.Taxonomy.LearnedCount);
+    }
+
+    [Fact]
+    public void Something_that_vanishes_across_the_room_was_not_taken_by_us()
+    {
+        using var h = new Harness();
+        h.World.PlayerPosition = Vector3.Zero;
+        h.World.Nearby.Add(At(WorldObjectKind.Interactable, Lever, new Vector3(20f, 0f, 0f)));
+        h.Shadow.Tick();
+
+        h.World.Nearby.Clear();
+        h.Shadow.Tick();
+
+        Assert.Equal(0, h.Taxonomy.Confirmations(Lever));
+    }
+
+    [Fact]
+    public void Nothing_is_learned_while_a_cutscene_owns_the_character()
+    {
+        using var h = new Harness();
+        h.World.PlayerPosition = Vector3.Zero;
+        h.World.Nearby.Add(At(WorldObjectKind.Interactable, Lever, new Vector3(3f, 0f, 0f)));
+        h.Shadow.Tick();
+
+        h.World.IsReady = false;
+        h.World.Nearby.Clear();
+        h.Shadow.Tick();
+
+        Assert.Equal(0, h.Taxonomy.Confirmations(Lever));
+    }
+
+    [Fact]
     public void The_shadow_never_moves_the_character()
     {
         using var h = new Harness();

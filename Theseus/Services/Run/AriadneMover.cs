@@ -155,6 +155,7 @@ public sealed class AriadneMover
     private readonly Action<bool> _setForwardMovement;
     private readonly Func<DateTime> _clock;
     private readonly Action<string>? _log;
+    private readonly Action<Vector3, Vector3>? _reportCrossing;
 
     /// <summary>The route being computed, if one is. Null once its answer has been acted on.</summary>
     private Task<(string Result, List<Vector3> Waypoints, Vector3? Nearest, bool Partial)>? _pending;
@@ -218,7 +219,8 @@ public sealed class AriadneMover
         Func<Vector3> position,
         Action<bool> setForwardMovement,
         Func<DateTime>? clock = null,
-        Action<string>? log = null)
+        Action<string>? log = null,
+        Action<Vector3, Vector3>? reportCrossing = null)
     {
         _ariadne = ariadne;
         _vnav = vnav;
@@ -226,6 +228,7 @@ public sealed class AriadneMover
         _setForwardMovement = setForwardMovement;
         _clock = clock ?? (() => DateTime.UtcNow);
         _log = log;
+        _reportCrossing = reportCrossing;
     }
 
     /// <summary>What the mover is doing about a route that stopped short, if anything.</summary>
@@ -598,7 +601,12 @@ public sealed class AriadneMover
                     _log?.Invoke($"Transit landed {travelled:0.#}y from ({from.X:0.#}, {from.Y:0.#}, " +
                                  $"{from.Z:0.#}) — re-pathing from ({position.X:0.#}, {position.Y:0.#}, " +
                                  $"{position.Z:0.#}).");
-                    _ = _ariadne.ReportTraversal(from, position, "direct", true);
+                    // Through the world's reporter when there is one, so a crossing the crossing
+                    // watch also sees is reported once rather than counted twice.
+                    if (_reportCrossing is { } report)
+                        report(from, position);
+                    else
+                        _ = _ariadne.ReportTraversal(from, position, "direct", true);
                 }
                 else
                 {

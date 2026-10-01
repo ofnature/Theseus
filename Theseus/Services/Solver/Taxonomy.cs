@@ -100,6 +100,23 @@ public sealed class Taxonomy
         => _learned.TryGetValue(dataId, out var entry) ? entry.Confirmations : 0;
 
     /// <summary>
+    /// Drops learned entries for objects that fail <paramref name="keep"/>, returning how many.
+    ///
+    /// <para>
+    /// For cleaning up what was learned before perception could tell a mechanism from scenery: the
+    /// first field runs filed an exit, an entrance barrier and an invisible marker as pickups,
+    /// because each vanished from the scan when the duty ended.
+    /// </para>
+    /// </summary>
+    public int Forget(Func<uint, bool> keep)
+    {
+        var drop = _learned.Keys.Where(id => !keep(id)).ToList();
+        foreach (var id in drop)
+            _learned.Remove(id);
+        return drop.Count;
+    }
+
+    /// <summary>
     /// Loads the learned layer, or starts empty — a missing or unreadable file is not an error, it
     /// is a first run, and the answer is to learn again rather than to refuse to start.
     /// </summary>

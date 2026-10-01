@@ -13,6 +13,22 @@ public class TaxonomyTests
     private const uint Door = 2005678;
 
     [Fact]
+    public void Forgetting_drops_only_what_fails_the_test()
+    {
+        // The field file: an exit and a marker learned as pickups beside one real mechanism.
+        var taxonomy = new Taxonomy();
+        taxonomy.Observe(2000139, BehaviourClass.PickupHold);
+        taxonomy.Observe(2007457, BehaviourClass.PickupHold);
+        taxonomy.Observe(Lever, BehaviourClass.DirectTrigger);
+
+        var forgotten = taxonomy.Forget(id => id == Lever);
+
+        Assert.Equal(2, forgotten);
+        Assert.Equal(1, taxonomy.LearnedCount);
+        Assert.Equal(1, taxonomy.Confirmations(Lever));
+    }
+
+    [Fact]
     public void One_observation_is_not_yet_a_class()
     {
         var taxonomy = new Taxonomy();

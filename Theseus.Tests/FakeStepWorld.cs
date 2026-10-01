@@ -145,6 +145,15 @@ public sealed class FakeStepWorld : IStepWorld
 
     public void StopMoving() => StopMovingCalls++;
 
+    /// <summary>What the mesh says about walking between two points. Walkable unless a test says not.</summary>
+    public Func<Vector3, Vector3, bool> Walkable { get; set; } = (_, _) => true;
+
+    public List<(Vector3 From, Vector3 To)> CrossingsReported { get; } = [];
+
+    public Task<bool> CanWalk(Vector3 from, Vector3 to) => Task.FromResult(Walkable(from, to));
+
+    public void ReportCrossing(Vector3 from, Vector3 to) => CrossingsReported.Add((from, to));
+
     public string MovementDetail { get; set; } = "fake navigator";
 
     public string DescribeMovement() => MovementDetail;
@@ -206,6 +215,9 @@ public sealed class FakeStepWorld : IStepWorld
     }
 
     public bool IsDataIdTargetable(uint dataId) => TargetableDataIds.Contains(dataId);
+
+    public Vector3? PositionOfDataId(uint dataId)
+        => ObjectPositions.TryGetValue(dataId, out var position) ? position : null;
 
     public bool IsDataIdSpawned(uint dataId) => SpawnedDataIds.Contains(dataId);
 

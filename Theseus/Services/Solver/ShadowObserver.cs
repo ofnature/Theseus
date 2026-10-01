@@ -41,6 +41,12 @@ public sealed class ShadowObserver : IPerception
     /// <summary>How much of the scan radius still counts as looking at the same place.</summary>
     private const float StillLooking = 0.75f;
 
+    /// <summary>How near the character must be to an object that vanished for it to count as taken.</summary>
+    private const float PickupReach = 8f;
+
+    /// <summary>This many interactables vanishing in one tick is the world changing, not a pickup.</summary>
+    private const int MassDespawn = 3;
+
     private readonly IStepWorld _world;
     private readonly IObjectiveReader _objectives;
     private readonly Taxonomy _taxonomy;
@@ -221,16 +227,26 @@ public sealed class ShadowObserver : IPerception
     /// </summary>
     private void LearnFromWhatLeft(WorldModel.Snapshot snapshot)
     {
-        foreach (var (id, before) in _seen)
+        // A cutscene or a zone load takes objects away without anyone taking them.
+        if (!_world.IsReady)
+            return;
+
+        var gone = _seen
+            .Where(pair => pair.Value.Kind == WorldObjectKind.Interactable
+                           && !snapshot.Objects.Any(o => o.Object.Id == pair.Key))
+            .Select(pair => pair.Value)
+            .ToList();
+
+        // Several at once is the world changing, not a pickup: a duty clearing, a wipe resetting
+        // the room, a phase swapping its props. Every one of those used to teach "pickup".
+        if (gone.Count >= MassDespawn)
+            return;
+
+        foreach (var before in gone)
         {
-            if (snapshot.Objects.Any(o => o.Object.Id == id))
-                continue;
-
-            if (before.Kind != WorldObjectKind.Interactable)
-                continue;
-
-            // Out of view is not gone: only count it if we are still looking at where it was.
-            if (Vector3.Distance(snapshot.Position, before.Position) > ScanRadius * StillLooking)
+            // Taken means taken by someone standing at it. Anything further is out of view, or
+            // somebody else's business the claim board already knows about.
+            if (Vector3.Distance(snapshot.Position, before.Position) > PickupReach)
                 continue;
 
             if (!_learned.Add(before.DataId))

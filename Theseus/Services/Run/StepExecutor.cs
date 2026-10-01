@@ -127,6 +127,12 @@ public sealed class StepExecutor
     /// <summary>Close enough for a ranged job to be in range of everything it would cast at.</summary>
     private const float RangedReach = 20f;
 
+    /// <summary>
+    /// How much nearer another mob must be before the walk turns toward it instead. Two mobs a yalm
+    /// apart in distance had the walk switching between them as it went.
+    /// </summary>
+    private const float RetargetMargin = 5f;
+
     private static readonly TimeSpan DefaultStepTimeout = TimeSpan.FromMinutes(3);
 
     /// <summary>
@@ -966,14 +972,22 @@ public sealed class StepExecutor
     /// Only mobs that are in combat: a pack standing further down the corridor is not ours to pull
     /// and walking to it would be exactly the "drags the next pack in" failure the combat hold
     /// exists to prevent. Reach is by role — a melee job has to stand next to it, a ranged job only
-    /// within cast range — and the target is set once, so the rotation and the targeting grace on
-    /// the Daedalus side are not fought every frame.
+    /// within cast range.
+    /// </para>
+    ///
+    /// <para>
+    /// It walks; it does not target. The rotation picks its own targets once the character is in
+    /// reach, and a target written from here only competes with that choice — and, whenever the
+    /// targeting gate on the Daedalus side is down, reads as a manual click that pauses its
+    /// movement for seconds at a time.
     /// </para>
     /// </summary>
     private bool EngageTrash()
     {
         Frontier.WorldObject? nearest = null;
         var nearestDistance = float.MaxValue;
+        Frontier.WorldObject? current = null;
+        var currentDistance = float.MaxValue;
         var here = _world.PlayerPosition;
 
         foreach (var o in _world.ScanNearby(TrashScanRadius))
@@ -982,11 +996,24 @@ public sealed class StepExecutor
                 continue;
 
             var distance = Vector3.Distance(here, o.Position);
+            if (o.Id == _trashTarget)
+            {
+                current = o;
+                currentDistance = distance;
+            }
+
             if (distance < nearestDistance)
             {
                 nearest = o;
                 nearestDistance = distance;
             }
+        }
+
+        // Stay on the mob already chosen unless another is clearly nearer.
+        if (current is not null && currentDistance <= nearestDistance + RetargetMargin)
+        {
+            nearest = current;
+            nearestDistance = currentDistance;
         }
 
         if (nearest is not { } mob)
@@ -1000,7 +1027,6 @@ public sealed class StepExecutor
         if (_trashTarget != mob.Id)
         {
             _trashTarget = mob.Id;
-            _world.AttackObject(mob.Id);
             if (nearestDistance > reach)
                 _world.Log($"Step {_index}: closing on {mob.Name} ({nearestDistance:0}y out).");
         }
