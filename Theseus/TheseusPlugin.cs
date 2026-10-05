@@ -72,7 +72,7 @@ public sealed class TheseusPlugin : IDalamudPlugin
         pluginInterface.Create<Service>();
 
         _config = PluginInterface.GetPluginConfig() as TheseusConfig ?? new TheseusConfig();
-        _presence = new PluginPresence(PluginInterface, () => _config.BossHandler);
+        _presence = new PluginPresence(PluginInterface, () => _config.BossHandler, () => _config.NavSource);
 
         var objectiveReader = new ObjectiveReader(fault =>
             Log.Warning($"Objective read failed — falling back to position-only. {fault}"));

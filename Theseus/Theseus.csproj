@@ -3,7 +3,7 @@
   <PropertyGroup>
     <AssemblyName>Theseus</AssemblyName>
     <RootNamespace>Theseus</RootNamespace>
-    <Version>0.1.3</Version>
+    <Version>0.1.4</Version>
     <DalamudLibPath>$(AppData)\XIVLauncher\addon\Hooks\dev\</DalamudLibPath>
 
     <!--

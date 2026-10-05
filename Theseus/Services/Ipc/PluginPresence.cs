@@ -40,11 +40,16 @@ public sealed class PluginPresence
 
     private readonly IDalamudPluginInterface _pluginInterface;
     private readonly Func<Config.BossHandler> _bossHandler;
+    private readonly Func<Config.NavSource> _navSource;
 
-    public PluginPresence(IDalamudPluginInterface pluginInterface, Func<Config.BossHandler>? bossHandler = null)
+    public PluginPresence(
+        IDalamudPluginInterface pluginInterface,
+        Func<Config.BossHandler>? bossHandler = null,
+        Func<Config.NavSource>? navSource = null)
     {
         _pluginInterface = pluginInterface;
         _bossHandler = bossHandler ?? (() => Config.BossHandler.BossModReborn);
+        _navSource = navSource ?? (() => Config.NavSource.Vnavmesh);
     }
 
     public bool Vnavmesh => IsLoaded(VnavmeshInternalName);
@@ -61,12 +66,27 @@ public sealed class PluginPresence
     /// <summary>Display name of the selected boss handler.</summary>
     public string BossHandlerName => _bossHandler() == Config.BossHandler.Minerva ? "Minerva" : "BossMod Reborn";
 
+    /// <summary>
+    /// Something can path and move the character, for the selected source.
+    ///
+    /// <para>
+    /// With Ariadne selected, vnavmesh is only the fallback a move drops to when Ariadne cannot route
+    /// a zone — and across the fleet it has never worked as one, throwing on every move. Requiring it
+    /// blocked "Queue and run" on a client set up exactly as intended. Either one is enough: Ariadne
+    /// absent, the mover hands every move to vnavmesh.
+    /// </para>
+    /// </summary>
+    public bool PathSource => _navSource() == Config.NavSource.Ariadne ? Ariadne || Vnavmesh : Vnavmesh;
+
+    /// <summary>Display name of the selected path source.</summary>
+    public string PathSourceName => _navSource() == Config.NavSource.Ariadne ? "Ariadne" : "vnavmesh";
+
     public bool Daedalus => IsLoaded(DaedalusInternalName);
 
     public bool Charon => IsLoaded(CharonInternalName);
 
     /// <summary>Everything required to run a dungeon is present.</summary>
-    public bool CoreReady => Vnavmesh && BossHandler && Daedalus;
+    public bool CoreReady => PathSource && BossHandler && Daedalus;
 
     /// <summary>
     /// Human-readable reason the run cannot start, or empty when it can. Named so the UI and the
@@ -75,7 +95,7 @@ public sealed class PluginPresence
     public string MissingSummary()
     {
         var missing = new System.Collections.Generic.List<string>();
-        if (!Vnavmesh) missing.Add("vnavmesh");
+        if (!PathSource) missing.Add(PathSourceName);
         if (!BossHandler) missing.Add(BossHandlerName);
         if (!Daedalus) missing.Add("Daedalus");
         return missing.Count == 0 ? string.Empty : "Missing: " + string.Join(", ", missing);

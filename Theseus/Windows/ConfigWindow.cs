@@ -115,20 +115,15 @@ public sealed class ConfigWindow : Window
     {
         ImGui.TextColored(TheseusTheme.TextSecondary, $"Theseus v{TheseusPlugin.PluginVersion}");
 
+        // What a run needs as configured: the selected path source, not both. With Ariadne selected
+        // vnavmesh is only a fallback, so it is not listed as required.
         ImGui.SameLine(0f, 20f);
-        TheseusTheme.DependencyChip("vnavmesh", _presence.Vnavmesh);
+        TheseusTheme.DependencyChip(_presence.PathSourceName,
+            _config.NavSource == NavSource.Ariadne ? _presence.Ariadne : _presence.Vnavmesh);
         ImGui.SameLine(0f, 12f);
         TheseusTheme.DependencyChip(_presence.BossHandlerName, _presence.BossHandler);
         ImGui.SameLine(0f, 12f);
         TheseusTheme.DependencyChip("Daedalus", _presence.Daedalus);
-
-        // Only when it is the selected source: otherwise it is an optional extra, and this line is
-        // for what a run needs as configured.
-        if (_config.NavSource == NavSource.Ariadne)
-        {
-            ImGui.SameLine(0f, 12f);
-            TheseusTheme.DependencyChip("Ariadne", _presence.Ariadne);
-        }
     }
 
     // ------------------------------------------------------------------ layout
@@ -401,8 +396,16 @@ public sealed class ConfigWindow : Window
         TheseusTheme.HelpMarker("Stop after this many completed runs. 0 = keep going until you stop it.");
 
         TheseusTheme.SectionHeader("DEPENDENCIES");
-        TheseusTheme.DependencyChip("vnavmesh — pathfinding and movement", _presence.Vnavmesh);
-        TheseusTheme.DependencyChip("Ariadne — alternative pathfinding (optional)", _presence.Ariadne);
+        if (_config.NavSource == NavSource.Ariadne)
+        {
+            TheseusTheme.DependencyChip("Ariadne — pathfinding and movement", _presence.Ariadne);
+            TheseusTheme.DependencyChip("vnavmesh — fallback when Ariadne cannot route (optional)", _presence.Vnavmesh);
+        }
+        else
+        {
+            TheseusTheme.DependencyChip("vnavmesh — pathfinding and movement", _presence.Vnavmesh);
+            TheseusTheme.DependencyChip("Ariadne — alternative pathfinding (optional)", _presence.Ariadne);
+        }
         TheseusTheme.DependencyChip($"{_presence.BossHandlerName} — boss mechanics", _presence.BossHandler);
         TheseusTheme.DependencyChip("Daedalus — rotation and LAN relay", _presence.Daedalus);
         TheseusTheme.DependencyChip("Charon — equip upgrades (optional)", _presence.Charon);
