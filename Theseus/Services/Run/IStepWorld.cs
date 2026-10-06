@@ -109,6 +109,12 @@ public interface IStepWorld
     /// </summary>
     bool IsMelee { get; }
 
+    /// <summary>
+    /// The boss engine (Minerva) is steering the character right now — dodging, usually. Theseus
+    /// stopping the navmesh then would cancel the dodge.
+    /// </summary>
+    bool DodgeSteering { get; }
+
     /// <summary>The game will accept a request to leave the instance right now.</summary>
     bool CanLeaveDuty { get; }
 

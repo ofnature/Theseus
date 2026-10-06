@@ -246,6 +246,8 @@ public sealed unsafe class GameStepWorld : IStepWorld
         }
     }
 
+    public bool DodgeSteering => _bossHandler() == Config.BossHandler.Minerva && _minerva.IsSteering;
+
     public bool CanLeaveDuty => FFXIVClientStructs.FFXIV.Client.Game.Event.EventFramework.CanLeaveCurrentContent();
 
     /// <summary>

@@ -38,6 +38,7 @@ public sealed class FakeStepWorld : IStepWorld
     public bool IsTank { get; set; }
 
     public bool IsMelee { get; set; } = true;
+    public bool DodgeSteering { get; set; }
 
     public bool CanLeaveDuty { get; set; } = true;
 

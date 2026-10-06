@@ -286,6 +286,9 @@ public sealed class StepExecutor
     private DateTime _lastTrashMoveUtc = DateTime.MinValue;
 
     private bool _forwardMoving;
+
+    // The trash hold has stopped the route walk for this combat (backline only; see HoldForCombat).
+    private bool _combatHoldStopped;
     private Vector3 _autoRunFrom;
     private bool _landing;
     private DateTime _landingSinceUtc;
@@ -534,13 +537,16 @@ public sealed class StepExecutor
             // Minerva does not steer at trash — so a pack that spawns at range, or a mob that
             // stops short, was a fight the party finished without us. The Ghimlyt Dark's drop
             // pods made it a minute a pack.
-            if (!EngageTrash())
-                _world.StopMoving();
+            if (EngageTrash())
+                _combatHoldStopped = false; // our own walk to the pack is running; stop it again once that ends
+            else
+                HoldForCombat();
 
             StopForwardMovement();
             _stepStartedUtc = _world.UtcNow; // combat time is not stuck time
             return;
         }
+        _combatHoldStopped = false;
 
         // The watchdog measures time without progress, not time on the step. Routes are not evenly
         // spaced — Mistwake crosses the whole dungeon in four MoveTo legs — so a single leg can
@@ -1562,6 +1568,32 @@ public sealed class StepExecutor
 
         _bossAiRequested = true;
         _world.SetBossModAi(true);
+    }
+
+    /// <summary>
+    /// Keeps the route from walking on while the pack is fought.
+    /// <para>
+    /// Tanks and melee stop every frame, as always: a tank that drifts on drags the next pack in, and the
+    /// wall-to-wall route is a separate route that switches combat stops off. Healers, casters and physical
+    /// ranged stop the route walk ONCE and then leave the navmesh alone — and never stop it while Minerva is
+    /// steering. Stopping every frame cancelled Minerva's trash dodges, which go through the same navmesh: the
+    /// roommate's Astrologian (Holminster Switch, 2026-10-04) stood in every trash cone and line, and with the
+    /// spot reading unsafe her rotation held every damage cast until the casters died.
+    /// </para>
+    /// </summary>
+    private void HoldForCombat()
+    {
+        if (_world.IsMelee)
+        {
+            _world.StopMoving();
+            return;
+        }
+
+        if (_combatHoldStopped || _world.DodgeSteering)
+            return;
+
+        _world.StopMoving();
+        _combatHoldStopped = true;
     }
 
     private void StopForwardMovement()

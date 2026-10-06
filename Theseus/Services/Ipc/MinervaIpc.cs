@@ -55,6 +55,7 @@ public sealed class MinervaIpc
     private ICallGateSubscriber<string, bool, bool>? _setAutoDodge;
     private ICallGateSubscriber<bool>? _bossEngaged;
     private ICallGateSubscriber<bool>? _isAutoDodgeEnabled;
+    private ICallGateSubscriber<bool>? _isSteering;
 
     private bool _warned;
 
@@ -104,6 +105,25 @@ public sealed class MinervaIpc
             catch
             {
                 return null; // an older Minerva: not a warning, just no answer
+            }
+        }
+    }
+
+    /// <summary>
+    /// Minerva is steering the character this frame (<c>Minerva.IsSteering</c>) — a dodge, or its own
+    /// walk back to uptime. False when Minerva is absent or too old to say.
+    /// </summary>
+    public bool IsSteering
+    {
+        get
+        {
+            try
+            {
+                return (_isSteering ??= _pluginInterface.GetIpcSubscriber<bool>("Minerva.IsSteering")).InvokeFunc();
+            }
+            catch
+            {
+                return false;
             }
         }
     }
