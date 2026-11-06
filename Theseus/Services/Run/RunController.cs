@@ -114,6 +114,9 @@ public sealed class RunController : IDisposable
     /// </summary>
     private bool _runOnArrival;
 
+    /// <summary>Another plugin asked for the character back once this run is over.</summary>
+    private readonly StopAfterRun _stopAfterRun = new();
+
     public RunController(
         TheseusConfig config,
         DutyLifecycle lifecycle,
@@ -155,6 +158,39 @@ public sealed class RunController : IDisposable
     }
 
     public RunState State { get; private set; } = RunState.Idle;
+
+    /// <summary>
+    /// Theseus is driving the character, or will without anyone asking again. Published as
+    /// <c>Theseus.IsBusy</c>.
+    ///
+    /// <para>
+    /// The driving states, plus the moment after an entry we were asked for lands: the entry is
+    /// done and the state reads Idle, but the run begins by itself when the barrier drops, and a
+    /// caller waiting for Theseus to be clear must not take that pause for the end of it.
+    /// </para>
+    /// </summary>
+    public bool IsBusy => _config.Enabled
+        && (State.IsDriving() || (State == RunState.Idle && _runOnArrival && _lifecycle.IsInDuty));
+
+    /// <summary>A stop-after-run request is waiting for this run to end. Shown on the run window.</summary>
+    public bool StopAfterRunRequested => _stopAfterRun.Pending;
+
+    /// <summary>
+    /// Finish the run in progress — clear the duty and leave it as usual — and then stay stopped.
+    /// True when Theseus was busy and will stop after this run (or was already asked); false, with
+    /// nothing changed, when it is idle. See <see cref="StopAfterRun"/>.
+    /// </summary>
+    public bool RequestStopAfterRun()
+    {
+        var alreadyAsked = _stopAfterRun.Pending;
+        if (!_stopAfterRun.Request(IsBusy))
+            return false;
+
+        if (!alreadyAsked)
+            _log("Asked to stop after this run — finishing it, then staying stopped.");
+
+        return true;
+    }
 
     /// <summary>One line explaining the current state, shown on the run window's status row.</summary>
     public string Status { get; private set; } = "Idle.";
@@ -661,6 +697,9 @@ public sealed class RunController : IDisposable
         _signals?.Tick();
 
         WatchForCrossings();
+
+        if (_stopAfterRun.Settle(IsBusy))
+            _log("Stopped after the run, as asked.");
 
         if (State is RunState.Idle or RunState.Faulted)
             return;

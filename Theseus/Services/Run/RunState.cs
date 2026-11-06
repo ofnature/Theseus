@@ -55,9 +55,10 @@ public enum RunState
 public static class RunStateExtensions
 {
     /// <summary>
-    /// Theseus is driving the character. This is the value published on <c>Theseus.IsBusy</c>, so
-    /// it decides when Daedalus fights for us — every state that moves, loots or chores counts,
-    /// and only the two states where the character is under nobody's control do not.
+    /// Theseus is driving the character. This is the core of <c>Theseus.IsBusy</c> (see
+    /// <c>RunController.IsBusy</c>), so it decides when Daedalus fights for us — every state that
+    /// moves, loots or chores counts, and only the two states where the character is under
+    /// nobody's control do not.
     /// </summary>
     public static bool IsDriving(this RunState state)
         => state is not (RunState.Idle or RunState.Faulted);

@@ -299,7 +299,7 @@ public sealed class TheseusPlugin : IDalamudPlugin
         // Published once the controller exists, so the gate never reports on a half-built run.
         // Daedalus reads a missing gate as idle, so appearing a moment late is harmless.
         _ipc = new TheseusIpc(PluginInterface,
-            () => _config.Enabled && _runController.State.IsDriving(),
+            () => _runController.IsBusy,
             // Odysseus hands MSQ dungeons and trials here. Alone that means Duty Support, not Trust: the story's own
             // cast is what an MSQ duty wants, and it is the only option before Shadowbringers.
             cfc =>
@@ -311,7 +311,9 @@ public sealed class TheseusPlugin : IDalamudPlugin
                 _runController.Enter(cfc, _dutyCatalog.NameOf(cfc), trust: false);
                 return _runController.State == RunState.Entering;
             },
-            () => _config.Enabled && _runController.CanEnterDuty);
+            () => _config.Enabled && _runController.CanEnterDuty,
+            // Argus, before it takes the character to the FC house: let this run finish, then stop.
+            _runController.RequestStopAfterRun);
 
 
         _pathEditorWindow = new PathEditorWindow(

@@ -31,16 +31,32 @@ namespace Theseus.Services.Ipc;
 /// (with the reason logged on this side) when Theseus is disabled, already in a duty, or the entry
 /// could not begin.
 /// </para>
+///
+/// <para>
+/// <b><c>Theseus.RequestStopAfterRun</c></b> — for Argus, before it moves the character to resend
+/// the FC's vessels. Theseus finishes the run it is in (clears the duty and leaves it as usual),
+/// then stays stopped; it never abandons a duty. True when it was busy and will stop, or was
+/// already asked; false, with nothing changed, when idle. The caller then waits on <c>IsBusy</c>
+/// to fall. The request clears once Theseus is idle, so a later start is not refused. The same
+/// contract is published by every automation plugin in the suite.
+/// </para>
+///
+/// <para>
+/// <c>IsBusy</c> is true while a run is entering, running, fighting or exiting, and in the pause
+/// between an entry we were asked for landing and the run beginning by itself at the barrier.
+/// </para>
 /// </summary>
 public sealed class TheseusIpc : IDisposable
 {
     public const string IsBusyGate = "Theseus.IsBusy";
     public const string EnterDutyGate = "Theseus.EnterDuty";
     public const string CanEnterDutyGate = "Theseus.CanEnterDuty";
+    public const string RequestStopAfterRunGate = "Theseus.RequestStopAfterRun";
 
     private readonly ICallGateProvider<bool> _isBusy;
     private readonly ICallGateProvider<uint, bool> _enterDuty;
     private readonly ICallGateProvider<bool> _canEnterDuty;
+    private readonly ICallGateProvider<bool> _requestStopAfterRun;
 
     /// <param name="isBusy">
     /// Reads the live run state. Must never throw — an exception here surfaces inside another
@@ -48,7 +64,13 @@ public sealed class TheseusIpc : IDisposable
     /// </param>
     /// <param name="enterDuty">Begins entering and running a duty by ContentFinderCondition id; true when the entry began.</param>
     /// <param name="canEnterDuty">Entry is possible right now: enabled, outside a duty, nothing in flight.</param>
-    public TheseusIpc(IDalamudPluginInterface pluginInterface, Func<bool> isBusy, Func<uint, bool> enterDuty, Func<bool> canEnterDuty)
+    /// <param name="requestStopAfterRun">Asks the run in progress to be the last; true when there was one.</param>
+    public TheseusIpc(
+        IDalamudPluginInterface pluginInterface,
+        Func<bool> isBusy,
+        Func<uint, bool> enterDuty,
+        Func<bool> canEnterDuty,
+        Func<bool> requestStopAfterRun)
     {
         _isBusy = pluginInterface.GetIpcProvider<bool>(IsBusyGate);
         _isBusy.RegisterFunc(() =>
@@ -89,6 +111,19 @@ public sealed class TheseusIpc : IDisposable
                 return false;
             }
         });
+
+        _requestStopAfterRun = pluginInterface.GetIpcProvider<bool>(RequestStopAfterRunGate);
+        _requestStopAfterRun.RegisterFunc(() =>
+        {
+            try
+            {
+                return requestStopAfterRun();
+            }
+            catch
+            {
+                return false;
+            }
+        });
     }
 
     public void Dispose()
@@ -96,5 +131,6 @@ public sealed class TheseusIpc : IDisposable
         _isBusy.UnregisterFunc();
         _enterDuty.UnregisterFunc();
         _canEnterDuty.UnregisterFunc();
+        _requestStopAfterRun.UnregisterFunc();
     }
 }

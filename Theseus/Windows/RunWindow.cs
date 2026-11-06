@@ -117,6 +117,9 @@ public sealed class RunWindow : Window
 
         ImGui.TextWrapped(_run.Status);
 
+        if (_run.StopAfterRunRequested)
+            ImGui.TextColored(TheseusTheme.StatusYellow, "Stopping after this run — another plugin asked.");
+
         if (_run.ActivePath is { } path)
         {
             ImGui.TextColored(TheseusTheme.TextSecondary,
