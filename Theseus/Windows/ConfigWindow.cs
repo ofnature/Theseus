@@ -281,6 +281,21 @@ public sealed class ConfigWindow : Window
             "Needs Ariadne answering with a reachable grid, and only ever applies to territories " +
             "with no recorded route — everything with one runs exactly as it does today.");
 
+        var generate = _config.GenerateRoutes;
+        if (ImGui.Checkbox("Plan the route from the zone files (experimental)", ref generate))
+        {
+            _config.GenerateRoutes = generate;
+            _save();
+        }
+
+        TheseusTheme.HelpMarker(
+            "Works the route out when the character zones in, from the game's own zone files: the " +
+            "boss rooms, in order, with the navmesh finding the way between them. Nothing is " +
+            "saved — the plan lasts for the run. It takes the place of a stored route in every " +
+            "dungeon while this is on, and where no plan can be made the run carries on as it " +
+            "would with this off. It does not open gates, pull levers or pick up keys yet, so a " +
+            "dungeon that needs those will stop at the first one.");
+
         ImGui.SetNextItemWidth(180f);
         if (ImGui.BeginCombo("Pathfinding source", _config.NavSource == NavSource.Ariadne ? "Ariadne" : "vnavmesh"))
         {

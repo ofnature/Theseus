@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Numerics;
+using System.Text.Json.Serialization;
 
 namespace Theseus.Services.Paths;
 
@@ -222,6 +223,13 @@ public sealed class ThreadPath
     /// </para>
     /// </summary>
     public bool IsEdited { get; set; }
+
+    /// <summary>
+    /// Planned from the zone files for one run, not imported or recorded. Never written to disk:
+    /// the store refuses it, and the flag itself is not part of the file format.
+    /// </summary>
+    [JsonIgnore]
+    public bool IsGenerated { get; set; }
 
     public bool IsRunnable => Blockers.Count == 0 && Steps.Count > 0;
 

@@ -5,6 +5,7 @@ using Theseus.Config;
 using Theseus.Services.Duty;
 using Theseus.Services.Fleet;
 using Theseus.Services.Frontier;
+using Theseus.Services.Generation;
 using Theseus.Services.Paths;
 using Solver = Theseus.Services.Solver;
 using Theseus.Services.Thread;
@@ -80,6 +81,20 @@ public sealed class RunController : IDisposable
     /// </summary>
     private bool _exploring;
 
+    /// <summary>Makes the planner for a territory, from where the character stands. Null: no planning.</summary>
+    private readonly Func<uint, System.Numerics.Vector3, RoutePlanner>? _planRoute;
+
+    /// <summary>A route being planned from the zone files; the run starts when it lands.</summary>
+    private RoutePlanner? _planner;
+
+    /// <summary>The run a plan was last asked for, so a run is planned once and not again.</summary>
+    private DutyRunKey? _plannedFor;
+
+    /// <summary>The route planned for <see cref="_plannedFor"/>, held in memory only. Null when planning failed.</summary>
+    private ThreadPath? _planned;
+
+    private bool _planFromBeginning;
+
     /// <summary>
     /// True once the solver has handed this run back. It does not get the run again in the same
     /// duty: the fallback exists for exactly this moment, and a solver that reassumed control would
@@ -130,7 +145,8 @@ public sealed class RunController : IDisposable
         Func<uint, bool>? autoRunnableTerritory = null,
         FrontierNavigator? frontier = null,
         Solver.SolverWiring? solver = null,
-        Diagnostics.SignalRecorder? signals = null)
+        Diagnostics.SignalRecorder? signals = null,
+        Func<uint, System.Numerics.Vector3, RoutePlanner>? planRoute = null)
     {
         _config = config;
         _lifecycle = lifecycle;
@@ -146,6 +162,7 @@ public sealed class RunController : IDisposable
         _frontier = frontier;
         _solver = solver;
         _signals = signals;
+        _planRoute = planRoute;
         _fleet = new FleetRoster(world);
         _gate = new FleetGate(world, _fleet, () => _config.PeerStaleSeconds);
 
@@ -461,7 +478,7 @@ public sealed class RunController : IDisposable
         _solverGaveBack = false;
 
         var territoryId = _lifecycle.RunKey.TerritoryId;
-        var resolved = _paths.Resolve(
+        var resolved = PlannedRoute() ?? _paths.Resolve(
             territoryId,
             _config.PreferredRoutes.GetValueOrDefault(territoryId),
             wallToWall: _config.MatchRouteToRole,
@@ -543,10 +560,68 @@ public sealed class RunController : IDisposable
         return true;
     }
 
+    /// <summary>The route planned for this very run, while the setting that asked for it is still on.</summary>
+    private ThreadPath? PlannedRoute()
+        => _config.GenerateRoutes && _planned is not null && _plannedFor == _lifecycle.RunKey ? _planned : null;
+
+    /// <summary>
+    /// Starts planning this run's route from the zone files, when that is asked for and has not
+    /// been tried for this run. True while a plan is being made: the run starts when it lands.
+    /// </summary>
+    private bool BeginPlanning(bool fromBeginning)
+    {
+        if (_planner is not null)
+            return true;
+
+        if (!_config.GenerateRoutes || _planRoute is null || !_lifecycle.IsInDuty)
+            return false;
+
+        // Planned already, or tried and failed: either way not again in the same run. A failed
+        // plan would fail the same way, and a fault must be able to restart into what is recorded.
+        var key = _lifecycle.RunKey;
+        if (_plannedFor == key)
+            return false;
+
+        _plannedFor = key;
+        _planned = null;
+        _planner = _planRoute(key.TerritoryId, _world.PlayerPosition);
+        _planFromBeginning = fromBeginning;
+        ActivePath = null;
+        State = RunState.Running;
+        Status = _planner.Detail;
+        _log($"Planning a route for territory {key.TerritoryId} from the zone files.");
+        return true;
+    }
+
+    /// <summary>Ticks a plan in the making, and starts the run on whatever it came to.</summary>
+    private void TickPlanner(RoutePlanner planner)
+    {
+        planner.Tick();
+        Status = planner.Detail;
+        if (planner.Status == PlanStatus.Planning)
+            return;
+
+        _planner = null;
+        if (planner.Route is { } route && _plannedFor == _lifecycle.RunKey)
+        {
+            _planned = route;
+            _log($"{planner.Detail} Running it; it is not saved.");
+        }
+        else
+        {
+            _log($"No route could be planned ({planner.Detail}) — carrying on without one.");
+        }
+
+        Start(_planFromBeginning);
+    }
+
     private void Start(bool fromBeginning)
     {
         // A death seen before a fault or a stop is not this run's to answer for.
         _respawns.Reset();
+
+        if (BeginPlanning(fromBeginning))
+            return;
 
         if (!TryBeginRoute(out var path))
             return;
@@ -614,6 +689,7 @@ public sealed class RunController : IDisposable
         _respawns.Reset();
         _singleStepIndex = -1;
         _runOnArrival = false;
+        _planner = null;
 
         if (_exploring)
         {
@@ -736,6 +812,12 @@ public sealed class RunController : IDisposable
         if (!_config.Enabled)
         {
             Stop("Theseus is disabled in settings.");
+            return;
+        }
+
+        if (_planner is { } planner)
+        {
+            TickPlanner(planner);
             return;
         }
 
@@ -1086,7 +1168,7 @@ public sealed class RunController : IDisposable
         // is what the objective list describes, and a route can be completed by hand after Theseus
         // stopped — those observations are still true and still worth keeping.
         var path = _learningPath;
-        if (path is not null && _mapper.Apply(path))
+        if (path is { IsGenerated: false } && _mapper.Apply(path))
         {
             _paths.Save(path);
             _log($"Learned objective tags for \"{path.Name}\" " +
@@ -1108,6 +1190,7 @@ public sealed class RunController : IDisposable
         State = RunState.Faulted;
         Status = reason;
         ActivePath = null;
+        _planner = null;
         _respawns.Reset();
         _log(reason);
 

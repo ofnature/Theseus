@@ -134,6 +134,17 @@ public sealed class TheseusConfig : IPluginConfiguration
     /// </summary>
     public bool SolverDrives { get; set; } = true;
 
+    /// <summary>
+    /// Plan each dungeon's route from its zone files at zone-in, instead of running a stored one.
+    ///
+    /// <para>
+    /// The plan is the boss rooms in order, walked by the same step executor a stored route uses,
+    /// and it is never saved. When nothing can be planned the run carries on exactly as it would
+    /// with this off. Off by default while it is being proven in the field.
+    /// </para>
+    /// </summary>
+    public bool GenerateRoutes { get; set; }
+
     /// <summary>Stop after this many completed runs. 0 = keep going until stopped.</summary>
     public int RunLimit { get; set; }
 

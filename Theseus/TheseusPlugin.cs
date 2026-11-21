@@ -14,6 +14,7 @@ using Theseus.Services.Run;
 using Theseus.Windows;
 using Solver = Theseus.Services.Solver;
 using Fleet = Theseus.Services.Fleet;
+using Generation = Theseus.Services.Generation;
 using Diag = Theseus.Services.Diagnostics;
 using static Theseus.Service;
 
@@ -97,6 +98,7 @@ public sealed class TheseusPlugin : IDalamudPlugin
         // What each event object is for, from the game's own sheet: mechanism, scenery, exit or
         // shortcut. Built before the world, which filters its scan through it.
         var eventObjects = new Frontier.EventObjectCatalog(DataManager, message => Log.Warning(message));
+        var zoneLayout = new Generation.ZoneLayoutReader(DataManager, message => Log.Warning(message));
 
         var world = new GameStepWorld(
             ClientState, ObjectTable, PartyList, Condition, Service.GameGui, Service.GameConfig,
@@ -294,7 +296,18 @@ public sealed class TheseusPlugin : IDalamudPlugin
             territory => _dutyCatalog.ByTerritory(territory) is not null,
             new Frontier.FrontierNavigator(world, _mapMarkers, _zoneOverrides, () => _config.LootChests),
             _solver,
-            signals);
+            signals,
+            // The zone files are read here, once per plan, and the planner asks Ariadne for the
+            // walks between rooms. With no Ariadne every answer is "unavailable" and the plan
+            // falls back to straight-line order.
+            (territory, position) => new Generation.RoutePlanner(
+                territory,
+                zoneLayout.Read(territory),
+                position,
+                (from, to) => _ariadneIpc.PathfindDetailed(from, to, fly: false),
+                () => _ariadneIpc.NavReady,
+                () => DateTime.UtcNow,
+                message => Log.Information(message)));
 
         // Published once the controller exists, so the gate never reports on a half-built run.
         // Daedalus reads a missing gate as idle, so appearing a moment late is harmless.

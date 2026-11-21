@@ -197,6 +197,10 @@ public sealed class PathStore
     /// <summary>Writes a path, replacing any stored under the same key.</summary>
     public void Save(ThreadPath path)
     {
+        // A route planned from the zone files lives for one run. Nothing about it is kept.
+        if (path.IsGenerated)
+            return;
+
         EnsureLoaded();
 
         var key = KeyFor(path);
