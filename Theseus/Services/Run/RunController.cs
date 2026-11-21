@@ -169,8 +169,33 @@ public sealed class RunController : IDisposable
     /// caller waiting for Theseus to be clear must not take that pause for the end of it.
     /// </para>
     /// </summary>
-    public bool IsBusy => _config.Enabled
-        && (State.IsDriving() || (State == RunState.Idle && _runOnArrival && _lifecycle.IsInDuty));
+    public bool IsBusy => ComputeBusy(
+        _config.Enabled, State, _lifecycle.IsInDuty, _runOnArrival, AutoStartWaiting, _stopAfterRun.Pending);
+
+    /// <summary>
+    /// Zoned in with the barrier still up, and the run will begin by itself when it drops: the
+    /// same pause as an entry we were asked for, reached through "start automatically".
+    /// </summary>
+    private bool AutoStartWaiting
+        => _config.AutoStartInDuty
+           && _lifecycle.Phase == DutyPhase.Waiting
+           && _autoRunnableTerritory(_lifecycle.RunKey.TerritoryId);
+
+    /// <summary>
+    /// The busy rule, as a function of its inputs so it can be tested without a game client.
+    ///
+    /// <para>
+    /// A pending stop-after-run request keeps Theseus busy for as long as the character is still in
+    /// the duty. Without that, a run that faulted inside read as "stopped after the run, as asked",
+    /// and the plugin that asked went on to move a character that was still in the instance.
+    /// </para>
+    /// </summary>
+    internal static bool ComputeBusy(
+        bool enabled, RunState state, bool inDuty, bool runOnArrival, bool autoStartWaiting, bool stopPending)
+        => enabled
+           && (state.IsDriving()
+               || (state == RunState.Idle && inDuty && (runOnArrival || autoStartWaiting))
+               || (stopPending && inDuty));
 
     /// <summary>A stop-after-run request is waiting for this run to end. Shown on the run window.</summary>
     public bool StopAfterRunRequested => _stopAfterRun.Pending;
@@ -520,6 +545,9 @@ public sealed class RunController : IDisposable
 
     private void Start(bool fromBeginning)
     {
+        // A death seen before a fault or a stop is not this run's to answer for.
+        _respawns.Reset();
+
         if (!TryBeginRoute(out var path))
             return;
 
@@ -583,6 +611,7 @@ public sealed class RunController : IDisposable
     public void Stop(string reason = "Stopped.")
     {
         _shortcut?.Cancel();
+        _respawns.Reset();
         _singleStepIndex = -1;
         _runOnArrival = false;
 
@@ -928,7 +957,8 @@ public sealed class RunController : IDisposable
                 _world.ReportCrossing(_crossingCandidate.From, _crossingCandidate.To);
         }
 
-        if (!_lifecycle.IsInDuty)
+        // Not with the master switch off: a disabled plugin sends nothing, to anyone.
+        if (!_lifecycle.IsInDuty || !_config.Enabled)
         {
             _crossings.Reset();
             return;
@@ -1078,6 +1108,11 @@ public sealed class RunController : IDisposable
         State = RunState.Faulted;
         Status = reason;
         ActivePath = null;
+        _respawns.Reset();
         _log(reason);
+
+        if (_stopAfterRun.Pending && _lifecycle.IsInDuty)
+            _log("A stop after this run was asked for, and the run has faulted inside the duty — " +
+                 "still reporting busy until the character is out of it.");
     }
 }

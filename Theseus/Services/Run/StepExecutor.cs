@@ -287,7 +287,8 @@ public sealed class StepExecutor
 
     private bool _forwardMoving;
 
-    // The trash hold has stopped the route walk for this combat (backline only; see HoldForCombat).
+    // Our own walk has been stopped since we last issued one (see HoldForCombat). Cleared wherever
+    // a walk of ours is issued, so the next hold stops it exactly once.
     private bool _combatHoldStopped;
     private Vector3 _autoRunFrom;
     private bool _landing;
@@ -383,6 +384,7 @@ public sealed class StepExecutor
         _stepBegun = false;
         _stopForCombat = true;
         _bossAiRequested = false;
+        _combatHoldStopped = false;
         _earlyFight = false;
         _earlyFightEndedUtc = DateTime.MinValue;
         _earlyClear = false;
@@ -546,7 +548,6 @@ public sealed class StepExecutor
             _stepStartedUtc = _world.UtcNow; // combat time is not stuck time
             return;
         }
-        _combatHoldStopped = false;
 
         // The watchdog measures time without progress, not time on the step. Routes are not evenly
         // spaced — Mistwake crosses the whole dungeon in four MoveTo legs — so a single leg can
@@ -834,6 +835,7 @@ public sealed class StepExecutor
         // are indistinguishable from the outside, and telling them apart is the whole question when
         // a run pulses, so it is worth one field.
         LastMoveAccepted = _world.MoveTo(destination);
+        _combatHoldStopped = false; // a walk of ours is running again
         return false;
     }
 
@@ -913,7 +915,11 @@ public sealed class StepExecutor
         {
             if (_world.InCombat)
             {
-                ReleaseHolds(); // trash on the way in: fight it where it is, not while walking on
+                // Trash on the way in: fight it where it is, not while walking on. Stopped once, not
+                // every frame — this branch used to stop the navmesh each tick, which cancelled the
+                // boss engine's trash dodges for every role on a Boss step.
+                HoldForCombat();
+                StopForwardMovement();
                 return false;
             }
 
@@ -1573,22 +1579,19 @@ public sealed class StepExecutor
     /// <summary>
     /// Keeps the route from walking on while the pack is fought.
     /// <para>
-    /// Tanks and melee stop every frame, as always: a tank that drifts on drags the next pack in, and the
-    /// wall-to-wall route is a separate route that switches combat stops off. Healers, casters and physical
-    /// ranged stop the route walk ONCE and then leave the navmesh alone — and never stop it while Minerva is
-    /// steering. Stopping every frame cancelled Minerva's trash dodges, which go through the same navmesh: the
-    /// roommate's Astrologian (Holminster Switch, 2026-10-04) stood in every trash cone and line, and with the
-    /// spot reading unsafe her rotation held every damage cast until the casters died.
+    /// Our own walk is stopped ONCE, and never while Minerva is steering. Stopping every frame cancelled
+    /// Minerva's trash dodges, which go through the same navmesh: the roommate's Astrologian (Holminster
+    /// Switch, 2026-10-04) stood in every trash cone and line, and with the spot reading unsafe her rotation
+    /// held every damage cast until the casters died.
+    /// </para>
+    /// <para>
+    /// The same for every role. Tanks and melee used to stop every frame, for fear of a tank drifting into
+    /// the next pack — but nothing of ours can restart the walk during a hold (the step is not executed while
+    /// it lasts), so once is enough, and every frame cost them their dodges exactly as it cost the healer hers.
     /// </para>
     /// </summary>
     private void HoldForCombat()
     {
-        if (_world.IsMelee)
-        {
-            _world.StopMoving();
-            return;
-        }
-
         if (_combatHoldStopped || _world.DodgeSteering)
             return;
 

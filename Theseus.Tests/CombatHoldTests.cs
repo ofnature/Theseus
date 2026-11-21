@@ -35,12 +35,47 @@ public class CombatHoldTests
 
     /// <summary>Unchanged for tanks and melee: a tank that drifts on drags the next pack in.</summary>
     [Fact]
-    public void Melee_stop_every_frame()
+    public void Melee_stop_the_route_once_too()
     {
+        // Every frame cost tanks and melee their trash dodges exactly as it cost the backline theirs.
         var (world, executor, baseline) = Fight(melee: true);
         Ticks(executor, 10);
-        Assert.Equal(baseline + 10, world.StopMovingCalls);
-        Assert.Empty(world.MoveRequests);
+        Assert.Equal(baseline + 1, world.StopMovingCalls);
+        Assert.Empty(world.MoveRequests); // and the route still holds: nothing restarts the walk
+    }
+
+    [Fact]
+    public void Melee_never_stop_a_dodge()
+    {
+        var (world, executor, baseline) = Fight(melee: true, steering: true);
+        Ticks(executor, 10);
+        Assert.Equal(baseline, world.StopMovingCalls);
+    }
+
+    private static (FakeStepWorld World, StepExecutor Executor, int Baseline) TrashOnABossStep(bool steering)
+    {
+        // A pack pulled forty yalms short of the arena, on the Boss step itself.
+        var world = new FakeStepWorld { InCombat = true, PlayerPosition = Vector3.Zero, IsMelee = false, DodgeSteering = steering };
+        var executor = new StepExecutor(world);
+        executor.Start(Path(new ThreadStep { Verb = StepVerb.Boss, Position = new PathPoint(100, 0, 0) }));
+        return (world, executor, world.StopMovingCalls);
+    }
+
+    [Fact]
+    public void Trash_on_a_boss_step_stops_the_walk_once()
+    {
+        var (world, executor, baseline) = TrashOnABossStep(steering: false);
+        Ticks(executor, 10);
+        Assert.Equal(baseline + 1, world.StopMovingCalls);
+        Assert.Empty(world.MoveRequests); // held, not walked on into the arena
+    }
+
+    [Fact]
+    public void Trash_on_a_boss_step_never_stops_a_dodge()
+    {
+        var (world, executor, baseline) = TrashOnABossStep(steering: true);
+        Ticks(executor, 10);
+        Assert.Equal(baseline, world.StopMovingCalls);
     }
 
     [Fact]

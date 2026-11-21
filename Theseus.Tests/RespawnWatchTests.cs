@@ -30,6 +30,19 @@ public class RespawnWatchTests
     }
 
     [Fact]
+    public void A_death_from_before_a_reset_is_forgotten()
+    {
+        // Died, the run faulted, the player was raised and walked on, then pressed Resume. The old
+        // death must not read as a respawn at the start of the new run.
+        var watch = new RespawnWatch();
+        watch.Observe(isDead: true, ready: true, Step6);
+
+        watch.Reset();
+
+        Assert.False(watch.Observe(isDead: false, ready: true, Entrance));
+    }
+
+    [Fact]
     public void Being_alive_throughout_is_never_a_respawn()
     {
         var watch = new RespawnWatch();

@@ -11,6 +11,27 @@ public class FleetTests
     private static FleetMember Npc(ulong id, int slot, Vector3 at)
         => new(id, $"npc{id}", slot, at, IsSelf: false, IsPlayer: false);
 
+    [Fact]
+    public void A_holding_gate_stops_the_walk_once_and_never_over_a_dodge()
+    {
+        var world = new FakeStepWorld();
+        world.Party.Add(Player(1, 0, Vector3.Zero, self: true));
+        world.Party.Add(Player(2, 1, new Vector3(200f, 0f, 0f)));
+        var (_, gate) = Fleet(world);
+
+        world.DodgeSteering = true;
+        Assert.True(gate.Hold(Vector3.Zero, 30f));
+        gate.Tick();
+        gate.Tick();
+        Assert.Equal(0, world.StopMovingCalls); // the boss engine is steering: not ours to stop
+
+        world.DodgeSteering = false;
+        for (var i = 0; i < 5; i++)
+            gate.Tick();
+        Assert.Equal(1, world.StopMovingCalls);
+        Assert.Equal(GateState.Holding, gate.State);
+    }
+
     private static (FleetRoster Roster, FleetGate Gate) Fleet(FakeStepWorld world, float stale = 10f)
     {
         var roster = new FleetRoster(world);

@@ -52,13 +52,17 @@ public sealed class CombatLoop
     /// Closes to engage range and targets, or holds. Runs every tick it is granted: the loop has no
     /// memory, because "what is alive" is a fact about the world and not about the loop.
     /// </summary>
+    /// <summary>The mob last targeted, so a target is written once per mob rather than once per tick.</summary>
+    private ulong _targeted;
+
     public void Run(WorldModel.Snapshot world, IStepWorld game)
     {
         var hostile = world.Nearest(o => o.Object.Kind == Services.Frontier.WorldObjectKind.Hostile);
 
         if (hostile is not { } target)
         {
-            game.StopMoving();
+            _targeted = 0;
+            StandStill(game);
             return;
         }
 
@@ -70,7 +74,24 @@ public sealed class CombatLoop
 
         // In range: stop, then target. Targeting goes through Theseus' target service, which records
         // the external write with Daedalus first — without that, a movement hold silently eats it.
-        game.StopMoving();
-        game.AttackObject(target.Object.Id);
+        StandStill(game);
+
+        // Once per mob. Written every tick it overrode the rotation's own choice every tick, and
+        // with the Daedalus targeting gate down each write read as a manual click.
+        if (_targeted != target.Object.Id)
+        {
+            _targeted = target.Object.Id;
+            game.AttackObject(target.Object.Id);
+        }
+    }
+
+    /// <summary>
+    /// Stops a walk that is running, unless the boss engine is the one steering. A stop every tick
+    /// regardless cancelled its dodges, which go through the same navmesh.
+    /// </summary>
+    private static void StandStill(IStepWorld game)
+    {
+        if (game.IsMoving && !game.DodgeSteering)
+            game.StopMoving();
     }
 }

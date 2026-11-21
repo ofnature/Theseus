@@ -46,6 +46,9 @@ public sealed class FleetGate
     private Vector3 _rally;
     private float _radius;
 
+    /// <summary>The walk in hand when the hold began has been stopped.</summary>
+    private bool _stopped;
+
     public FleetGate(IStepWorld world, FleetRoster roster, Func<float>? staleSeconds = null)
     {
         _world = world;
@@ -72,6 +75,7 @@ public sealed class FleetGate
 
         _rally = rally;
         _radius = radius;
+        _stopped = false;
         State = GateState.Holding;
         Detail = "Waiting for the fleet.";
         return true;
@@ -127,7 +131,15 @@ public sealed class FleetGate
         if (outstanding > 0)
         {
             Detail = $"Waiting for {outstanding} of the fleet.";
-            _world.StopMoving();
+
+            // Once, and never over the boss engine's steering: nothing of ours moves while the gate
+            // holds, and a stop every tick cancels a dodge the same way it did in the trash hold.
+            if (!_stopped && !_world.DodgeSteering)
+            {
+                _world.StopMoving();
+                _stopped = true;
+            }
+
             return State;
         }
 

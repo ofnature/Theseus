@@ -579,7 +579,7 @@ public sealed class ConfigWindow : Window
                 route.Variant switch
                 {
                     RouteVariant.TankWallToWall => "· tank W2W",
-                    RouteVariant.OtherWallToWall => "· non-tank W2W",
+                    RouteVariant.OtherWallToWall => "· non-tank",
                     RouteVariant.WallToWall => "· W2W",
                     _ => "· standard",
                 });

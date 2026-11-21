@@ -82,6 +82,7 @@ public sealed class SolverDriverTests
     public void Combat_stands_and_targets_instead_of_walking_on()
     {
         var f = new Fixture();
+        f.Game.IsMoving = true; // the exploration walk that was in hand when the fight began
         f.Fresh(inCombat: true);
 
         f.Driver.Tick();

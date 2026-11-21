@@ -65,7 +65,7 @@ public sealed class CombatLoopTests
     [Fact]
     public void In_range_it_targets_and_stands_still()
     {
-        var game = new FakeStepWorld();
+        var game = new FakeStepWorld { IsMoving = true };
 
         new CombatLoop().Run(World(objects: [Hostile(2f)]), game);
 
@@ -77,9 +77,32 @@ public sealed class CombatLoopTests
     }
 
     [Fact]
-    public void With_nothing_left_it_stops_walking()
+    public void A_mob_is_targeted_once_not_every_tick()
     {
         var game = new FakeStepWorld();
+        var loop = new CombatLoop();
+
+        for (var i = 0; i < 5; i++)
+            loop.Run(World(objects: [Hostile(2f)]), game);
+
+        Assert.Equal([99ul], game.Attacked);
+        Assert.Equal(0, game.StopMovingCalls); // nothing was walking, so there was nothing to stop
+    }
+
+    [Fact]
+    public void It_never_stops_the_boss_engine_steering()
+    {
+        var game = new FakeStepWorld { IsMoving = true, DodgeSteering = true };
+
+        new CombatLoop().Run(World(objects: [Hostile(2f)]), game);
+
+        Assert.Equal(0, game.StopMovingCalls);
+    }
+
+    [Fact]
+    public void With_nothing_left_it_stops_walking()
+    {
+        var game = new FakeStepWorld { IsMoving = true };
 
         new CombatLoop().Run(World(), game);
 

@@ -52,6 +52,10 @@ public class RouteVariantTests : IDisposable
     [InlineData("「Tank W2W - タンクまとめ」 Sohm Al", RouteVariant.TankWallToWall)]
     [InlineData("「Other W2W - タンク以外まとめ」 Sohm Al", RouteVariant.OtherWallToWall)]
     [InlineData("「W2W-まとめ」 Alexandria", RouteVariant.WallToWall)]
+    [InlineData("「Other - タンク以外」 Holminster Switch", RouteVariant.OtherWallToWall)] // no W2W in the name
+    [InlineData("The Mothercrystal", RouteVariant.Standard)]                           // "other" in a duty name
+    [InlineData("「W2W-まとめ」 The Mothercrystal", RouteVariant.WallToWall)]
+    [InlineData("Another Mount Rokkon", RouteVariant.Standard)]
     public void Variants_are_read_from_the_route_name(string name, RouteVariant expected)
     {
         var path = new ThreadPath { TerritoryId = 1064, Name = name };

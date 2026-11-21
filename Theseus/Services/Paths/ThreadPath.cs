@@ -97,7 +97,10 @@ public enum RouteVariant
     /// <summary>Wall-to-wall pull written for the tank.</summary>
     TankWallToWall,
 
-    /// <summary>Written for everyone else while a tank is pulling wall to wall.</summary>
+    /// <summary>
+    /// Written for everyone but the tank — following a wall-to-wall pull, or stopping at each pack.
+    /// The library spells both "Other"; only some of them add "W2W".
+    /// </summary>
     OtherWallToWall,
 
     /// <summary>Wall-to-wall with no role named. Safe for the puller; not for anyone following.</summary>
@@ -249,18 +252,33 @@ public sealed class ThreadPath
     {
         get
         {
+            // Role words are read from the 「…」 tag only. Duty names contain them too — "The
+            // Mothercrystal", "Another Mount Rokkon" — and must not turn a route into a role's.
+            var tag = RoleTag(Name);
+            var tank = tag.Contains("Tank", StringComparison.OrdinalIgnoreCase);
+            var other = tag.Contains("Other", StringComparison.OrdinalIgnoreCase);
+
             if (Name.Contains("W2W", StringComparison.OrdinalIgnoreCase))
             {
-                if (Name.Contains("Tank", StringComparison.OrdinalIgnoreCase))
+                if (tank)
                     return RouteVariant.TankWallToWall;
 
-                return Name.Contains("Other", StringComparison.OrdinalIgnoreCase)
-                    ? RouteVariant.OtherWallToWall
-                    : RouteVariant.WallToWall;
+                return other ? RouteVariant.OtherWallToWall : RouteVariant.WallToWall;
             }
 
-            return RouteVariant.Standard;
+            // "「Other - タンク以外」 Holminster Switch": the non-tank route with no W2W in its name.
+            // Thirteen of the library's routes are spelled this way; read as Standard they tied with
+            // the bare boss-to-boss route and lost to it on name order.
+            return other ? RouteVariant.OtherWallToWall : RouteVariant.Standard;
         }
+    }
+
+    /// <summary>The text between the first 「 and 」 of a route name, or empty when it has no tag.</summary>
+    private static string RoleTag(string name)
+    {
+        var open = name.IndexOf('「');
+        var close = open >= 0 ? name.IndexOf('」', open) : -1;
+        return close > open ? name[(open + 1)..close] : string.Empty;
     }
 
     /// <summary>Key for a route that has not been loaded, so callers can look one up by name.</summary>
